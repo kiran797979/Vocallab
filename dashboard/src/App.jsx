@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CONFIG
-// ═══════════════════════════════════════════════════════════════════════════
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
 const WS_URL = 'ws://localhost:8000/ws/dashboard';
 const RECONNECT_MS = 3000;
 const MAX_LOG = 50;
@@ -32,9 +30,23 @@ const ago = (d) => {
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// MAIN APP
-// ═══════════════════════════════════════════════════════════════════════════
+// ─── DESIGN TOKENS ───────────────────────────────────────────────────────────
+const T = {
+  bg: '#0b1120',
+  surface: '#111827',
+  surface2: '#1a2332',
+  border: '#1e293b',
+  accent: '#00d4aa',
+  accentDim: 'rgba(0,212,170,0.12)',
+  danger: '#ef4444',
+  dangerDim: 'rgba(239,68,68,0.10)',
+  success: '#22c55e',
+  text: '#e2e8f0',
+  textDim: '#64748b',
+  textMuted: '#475569',
+};
+
+// ─── MAIN APP (logic preserved exactly) ──────────────────────────────────────
 export default function App() {
   const [ws, setWs] = useState('disconnected');
   const [tab, setTab] = useState('live');
@@ -46,6 +58,10 @@ export default function App() {
   const [lastMsg, setLastMsg] = useState(null);
   const wsRef = useRef(null);
   const reconRef = useRef(null);
+  const stepRef = useRef(step);
+  const onMsgRef = useRef(null);
+
+  useEffect(() => { stepRef.current = step; }, [step]);
 
   const pushLog = useCallback((type, msg) => {
     setLog((p) => [{ id: Date.now() + Math.random(), type, msg, time: new Date() }, ...p].slice(0, MAX_LOG));
@@ -55,18 +71,15 @@ export default function App() {
     (data) => {
       const t = data.type || data.event || '';
       const now = new Date();
-      console.log('[WS] Message received:', t, data);
 
       if (t === 'experiment_loaded' || t === 'init') {
         setInfo({ name: data.experiment_name || data.name || 'Acid-Base Titration', steps: data.total_steps || 4 });
         if (data.current_step !== undefined) setStep(data.current_step);
         pushLog('info', `Experiment: ${data.experiment_name || 'Acid-Base Titration'}`);
-
       } else if (t === 'student_update') {
-        // ─── Main real-time update from student frames ───
         if (data.detections) setObjects(data.detections);
         if (data.step_info) {
-          const prevStep = step;
+          const prevStep = stepRef.current;
           const newStep = data.step_info.current_step;
           setStep(newStep);
           if (prevStep !== newStep) {
@@ -79,229 +92,165 @@ export default function App() {
           );
           pushLog('danger', `⚠ ${data.safety_alert.message || 'Safety alert'}`);
         }
-        if (data.experiment_complete) {
-          pushLog('success', '🎉 Experiment completed!');
-        }
-
+        if (data.experiment_complete) pushLog('success', '🎉 Experiment completed!');
       } else if (t === 'step_advance') {
         const s = data.step ?? data.current_step ?? data.step_index;
         setStep(s);
         pushLog('step', `Step ${(s || 0) + 1}: ${data.step_name || STEP_NAMES[s] || 'Unknown'}`);
-
       } else if (t === 'safety_alert') {
         setSafety((p) =>
           [{ id: Date.now(), msg: data.message || 'Safety alert', sev: data.severity || 'high', time: now }, ...p].slice(0, MAX_LOG)
         );
         pushLog('danger', `⚠ ${data.message || 'Safety alert'}`);
-
       } else if (t === 'detection' || t === 'detections') {
         setObjects(data.objects || data.detections || []);
-
       } else if (t === 'experiment_complete' || t === 'complete') {
         pushLog('success', '🎉 Experiment completed!');
-
       } else if (t === 'student_connected') {
         pushLog('info', `Student connected (${data.student_count || 1} total)`);
-
       } else if (t === 'student_disconnected') {
         pushLog('info', `Student disconnected (${data.student_count || 0} total)`);
-
       } else if (t === 'experiment_reset') {
-        setStep(0);
-        setObjects([]);
-        setSafety([]);
+        setStep(0); setObjects([]); setSafety([]);
         pushLog('info', '🔄 Experiment reset');
-
       } else if (t === 'heartbeat' || t === 'pong') {
-        // Silent
-
+        // silent
       } else {
         if (data.current_step !== undefined) setStep(data.current_step);
         if (data.objects) setObjects(data.objects);
         if (data.detections) setObjects(data.detections);
       }
     },
-    [pushLog, step]
+    [pushLog]
   );
+
+  useEffect(() => { onMsgRef.current = onMsg; }, [onMsg]);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     setWs('connecting');
-    console.log('[WS] Connecting to', WS_URL);
     try {
       const s = new WebSocket(WS_URL);
       wsRef.current = s;
       s.onopen = () => {
         setWs('connected');
-        if (reconRef.current) {
-          clearTimeout(reconRef.current);
-          reconRef.current = null;
-        }
-        console.log('[WS] ✅ Connected');
+        if (reconRef.current) { clearTimeout(reconRef.current); reconRef.current = null; }
       };
       s.onmessage = (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          onMsg(d);
-          setLastMsg(new Date());
-        } catch (err) {
-          console.warn('[WS] Parse error', err);
-        }
+        try { onMsgRef.current(JSON.parse(e.data)); setLastMsg(new Date()); }
+        catch (err) { console.warn('[WS] Parse error', err); }
       };
       s.onclose = () => {
-        setWs('disconnected');
-        wsRef.current = null;
+        setWs('disconnected'); wsRef.current = null;
         reconRef.current = setTimeout(connect, RECONNECT_MS);
-        console.log('[WS] Disconnected, reconnecting in', RECONNECT_MS, 'ms');
       };
       s.onerror = () => setWs('disconnected');
     } catch (err) {
       setWs('disconnected');
       reconRef.current = setTimeout(connect, RECONNECT_MS);
-      console.warn('[WS] Error', err);
     }
-  }, [onMsg]);
+  }, []);
 
   useEffect(() => {
-    console.log('[App] Mounted');
     connect();
-    return () => {
-      wsRef.current?.close();
-      if (reconRef.current) clearTimeout(reconRef.current);
-    };
+    return () => { wsRef.current?.close(); if (reconRef.current) clearTimeout(reconRef.current); };
   }, [connect]);
 
   const [, tick] = useState(0);
-  useEffect(() => {
-    const i = setInterval(() => tick((t) => t + 1), 5000);
-    return () => clearInterval(i);
-  }, []);
+  useEffect(() => { const i = setInterval(() => tick((t) => t + 1), 5000); return () => clearInterval(i); }, []);
 
-  const tabs = [
-    { id: 'live', icon: '🔬', label: 'Live Experiment' },
-    { id: 'students', icon: '👥', label: 'Class Overview' },
-    { id: 'library', icon: '📚', label: 'Experiment Library' },
-  ];
+  const statusColor = ws === 'connected' ? T.accent : ws === 'connecting' ? '#fbbf24' : T.danger;
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════════════════════════
   return (
-    <div
-      className="min-h-screen min-h-[100dvh] flex flex-col w-full overflow-x-hidden"
-      style={{
-        background: 'linear-gradient(180deg, #0a0f1e 0%, #0d1321 50%, #0a0f1e 100%)',
-        color: '#f1f5f9',
-      }}
-    >
-      {/* ════════ HEADER ════════ */}
-      <header
-        className="sticky top-0 z-50 shrink-0 w-full"
-        style={{
-          background: 'rgba(10, 15, 30, 0.92)',
-          backdropFilter: 'blur(20px)',
-          WebkitBackdropFilter: 'blur(20px)',
-          borderBottom: '1px solid #1e2d3d',
-        }}
-      >
-        {/* Top bar: logo + status + branding */}
-        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between gap-2 sm:gap-4 h-14 sm:h-16 min-h-[56px]">
-            <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-              <div
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl flex items-center justify-center text-base sm:text-lg font-black shrink-0"
-                style={{
-                  background: 'linear-gradient(135deg, #00d4aa, #00a389)',
-                  color: '#0a0f1e',
-                }}
-              >
-                V
-              </div>
-              <div className="flex flex-col gap-0.5 min-w-0">
-                <span className="text-base sm:text-lg font-extrabold tracking-tight leading-tight truncate" style={{ color: '#f1f5f9' }}>
-                  Vocal<span style={{ color: '#00d4aa' }}>Lab</span>
-                </span>
-                <span className="text-[10px] sm:text-xs font-medium leading-tight truncate hidden sm:block" style={{ color: '#64748b' }}>Instructor Dashboard</span>
+    <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', background: T.bg, color: T.text }}>
+
+      {/* ─── HEADER ─────────────────────────────────────────────────────── */}
+      <header style={{
+        position: 'sticky', top: 0, zIndex: 50,
+        background: 'rgba(11,17,32,0.85)', backdropFilter: 'blur(16px)',
+        borderBottom: `1px solid ${T.border}`,
+      }}>
+        <div style={{ maxWidth: 1280, margin: '0 auto', padding: '0 24px' }}>
+          {/* Top row */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 56 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: 10,
+                background: `linear-gradient(135deg, ${T.accent}, #00a389)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontWeight: 900, fontSize: 16, color: T.bg,
+              }}>V</div>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 17, lineHeight: 1.2 }}>
+                  Vocal<span style={{ color: T.accent }}>Lab</span>
+                </div>
+                <div style={{ fontSize: 11, color: T.textDim, fontWeight: 500 }}>Instructor Dashboard</div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 sm:gap-4 shrink-0">
-              <div
-                className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg min-h-[44px] sm:min-h-0"
-                style={{
-                  background:
-                    ws === 'connected'
-                      ? 'rgba(0, 212, 170, 0.12)'
-                      : ws === 'connecting'
-                        ? 'rgba(251, 191, 36, 0.12)'
-                        : 'rgba(239, 68, 68, 0.12)',
-                  border: `1px solid ${ws === 'connected' ? 'rgba(0, 212, 170, 0.3)' : ws === 'connecting' ? 'rgba(251, 191, 36, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
-                }}
-              >
-                <div
-                  className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full shrink-0"
-                  style={{
-                    background: ws === 'connected' ? '#00d4aa' : ws === 'connecting' ? '#fbbf24' : '#ef4444',
-                    animation:
-                      ws === 'connected' ? 'glowPulse 2s ease-in-out infinite' : ws === 'connecting' ? 'blinkDot 1.4s ease-in-out infinite' : 'none',
-                  }}
-                />
-                <span
-                  className="text-[10px] sm:text-xs font-bold uppercase tracking-wider"
-                  style={{
-                    color: ws === 'connected' ? '#00d4aa' : ws === 'connecting' ? '#fbbf24' : '#ef4444',
-                  }}
-                >
-                  {ws === 'connected' ? 'LIVE' : ws === 'connecting' ? 'CONNECTING' : 'OFFLINE'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {/* Status pill */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '5px 12px', borderRadius: 8,
+                background: `${statusColor}18`, border: `1px solid ${statusColor}40`,
+              }}>
+                <div style={{
+                  width: 7, height: 7, borderRadius: '50%', background: statusColor,
+                  animation: ws === 'connected' ? 'pulse-dot 2s ease-in-out infinite' : ws === 'connecting' ? 'pulse-dot 1s ease-in-out infinite' : 'none',
+                }} />
+                <span style={{ fontSize: 11, fontWeight: 700, color: statusColor, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  {ws === 'connected' ? 'LIVE' : ws === 'connecting' ? '...' : 'OFFLINE'}
                 </span>
               </div>
-              {lastMsg && (
-                <span className="text-xs hidden md:inline whitespace-nowrap" style={{ color: '#64748b' }}>
-                  {ago(lastMsg)}
-                </span>
-              )}
-              <div
-                className="hidden sm:flex items-center gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg"
-                style={{
-                  background: 'rgba(0, 212, 170, 0.08)',
-                  border: '1px solid rgba(0, 212, 170, 0.2)',
-                }}
-              >
-                <span className="text-[9px] sm:text-[9px] font-semibold tracking-widest" style={{ color: '#64748b' }}>AMD</span>
-                <span style={{ color: '#00d4aa', fontSize: '10px', fontWeight: 800 }}>Ryzen™ AI</span>
+              {lastMsg && <span style={{ fontSize: 11, color: T.textDim }}>{ago(lastMsg)}</span>}
+              {/* AMD badge */}
+              <div style={{
+                padding: '4px 10px', borderRadius: 6,
+                background: T.accentDim, border: `1px solid ${T.accent}30`,
+                fontSize: 10, fontWeight: 700, color: T.accent,
+                display: 'flex', gap: 4, alignItems: 'center',
+              }}>
+                <span style={{ color: T.textDim, fontWeight: 600, letterSpacing: '0.08em' }}>AMD</span>
+                Ryzen™ AI
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Tab bar — scrollable on small screens, touch-friendly */}
-        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8" style={{ borderTop: '1px solid #1e2d3d' }}>
-          <nav className="flex overflow-x-auto overflow-y-hidden flex-nowrap gap-0 scroll-smooth -mx-4 px-4 sm:mx-0 sm:px-0" role="tablist" style={{ WebkitOverflowScrolling: 'touch' }}>
-            {tabs.map((t) => (
+          {/* Tab bar */}
+          <nav style={{ display: 'flex', gap: 0, borderTop: `1px solid ${T.border}` }}>
+            {[
+              { id: 'live', icon: '🔬', label: 'Live Experiment' },
+              { id: 'students', icon: '👥', label: 'Class Overview' },
+              { id: 'library', icon: '📚', label: 'Experiment Library' },
+            ].map((t) => (
               <button
                 key={t.id}
-                role="tab"
-                aria-selected={tab === t.id}
-                onClick={() => {
-                  setTab(t.id);
-                  console.log('[App] Tab changed to', t.id);
-                }}
-                className="px-4 sm:px-6 py-3.5 sm:py-4 text-xs sm:text-sm font-semibold flex items-center gap-1.5 sm:gap-2 border-b-2 shrink-0 min-h-[48px] min-w-[120px] sm:min-w-0 transition-colors touch-manipulation"
+                onClick={() => setTab(t.id)}
                 style={{
-                  color: tab === t.id ? '#00d4aa' : '#94a3b8',
-                  borderBottomColor: tab === t.id ? '#00d4aa' : 'transparent',
-                  background: tab === t.id ? 'rgba(0, 212, 170, 0.04)' : 'transparent',
+                  padding: '14px 20px', fontSize: 13, fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  background: tab === t.id ? `${T.accent}08` : 'transparent',
+                  color: tab === t.id ? T.accent : T.textDim,
+                  border: 'none',
+                  borderBottom: `2px solid ${tab === t.id ? T.accent : 'transparent'}`,
+                  cursor: 'pointer', transition: 'all 0.2s',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                <span className="opacity-90">{t.icon}</span>
-                <span className="hidden sm:inline">{t.label}</span>
-                <span className="sm:hidden">{t.id === 'live' ? 'Live' : t.id === 'students' ? 'Class' : 'Library'}</span>
+                <span>{t.icon}</span> {t.label}
               </button>
             ))}
           </nav>
         </div>
       </header>
 
-      {/* ════════ MAIN CONTENT ════════ */}
-      <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 box-border overflow-x-hidden">
-        {tab === 'live' && <LiveTab info={info} step={step} objects={objects} safety={safety} log={log} ws={ws} />}
+      {/* ─── MAIN ───────────────────────────────────────────────────────── */}
+      <main style={{ flex: 1, maxWidth: 1280, margin: '0 auto', width: '100%', padding: '24px 24px 48px' }}>
+        {tab === 'live' && <LiveTab info={info} step={step} objects={objects} safety={safety} log={log} />}
         {tab === 'students' && <StudentsTab />}
         {tab === 'library' && <LibraryTab />}
       </main>
@@ -309,588 +258,414 @@ export default function App() {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CARD WRAPPER — consistent 16px radius, padding, border
-// ═══════════════════════════════════════════════════════════════════════════
-function Card({ children, className = '', glow = false, danger = false, style = {} }) {
+// ═════════════════════════════════════════════════════════════════════════════
+// CARD
+// ═════════════════════════════════════════════════════════════════════════════
+function Card({ children, style = {}, danger = false, delay = 0 }) {
   return (
-    <div
-      className={`rounded-xl sm:rounded-2xl p-4 sm:p-6 transition-all duration-200 ${className}`}
-      style={{
-        background: danger ? '#18101f' : '#111828',
-        border: `1px solid ${danger ? 'rgba(239, 68, 68, 0.25)' : glow ? 'rgba(0, 212, 170, 0.2)' : '#1e2d3d'}`,
-        boxShadow: glow ? '0 0 24px rgba(0, 212, 170, 0.05)' : danger ? '0 0 24px rgba(239, 68, 68, 0.05)' : '0 1px 0 0 rgba(255,255,255,0.03), 0 4px 12px rgba(0,0,0,0.25)',
-        ...style,
-      }}
-    >
+    <div style={{
+      background: danger ? '#160d1e' : T.surface,
+      border: `1px solid ${danger ? 'rgba(239,68,68,0.25)' : T.border}`,
+      borderRadius: 14, padding: 20, overflow: 'hidden',
+      animation: `fadeIn 0.45s ease-out ${delay}s both`,
+      ...style,
+    }}>
       {children}
     </div>
   );
 }
 
-// Section card header: title + optional badge (same pattern everywhere)
-function SectionHeader({ icon, title, badge, badgeStyle = {} }) {
-  return (
-    <div className="flex items-center justify-between gap-3 sm:gap-4 mb-4 sm:mb-5">
-      <h3 className="text-xs sm:text-sm font-bold flex items-center gap-2 shrink-0 min-w-0" style={{ color: '#f1f5f9' }}>
-        <span>{icon}</span>
-        {title}
-      </h3>
-      {badge != null && (
-        <span
-          className="text-xs font-semibold px-2.5 py-1 rounded-md shrink-0"
-          style={{
-            background: 'rgba(0, 212, 170, 0.12)',
-            color: '#00d4aa',
-            border: '1px solid rgba(0, 212, 170, 0.2)',
-            ...badgeStyle,
-          }}
-        >
-          {badge}
-        </span>
-      )}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// STAT CARD — equal height, clear label/value hierarchy
-// ═══════════════════════════════════════════════════════════════════════════
-function StatCard({ icon, label, value, color = '#00d4aa', delayMs = 0 }) {
-  const bgFromRgb = color === '#00d4aa' ? '0, 212, 170' : color === '#ef4444' ? '239, 68, 68' : color === '#22c55e' ? '34, 197, 94' : '100, 116, 139';
-  return (
-    <div
-      className="rounded-xl sm:rounded-2xl p-4 sm:p-5 flex items-center gap-3 sm:gap-4 min-h-[72px] sm:min-h-[88px]"
-      style={{
-        background: '#111828',
-        border: '1px solid #1e2d3d',
-        boxShadow: '0 1px 0 0 rgba(255,255,255,0.02), 0 4px 12px rgba(0,0,0,0.2)',
-        animation: 'fadeUp 0.4s ease-out both',
-        animationDelay: `${delayMs}ms`,
-      }}
-    >
-      <div
-        className="w-10 h-10 sm:w-11 sm:h-11 rounded-lg sm:rounded-xl flex items-center justify-center text-base sm:text-lg shrink-0"
-        style={{ background: `rgba(${bgFromRgb}, 0.14)` }}
-      >
-        {icon}
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider mb-0.5 sm:mb-1 truncate" style={{ color: '#64748b' }}>
-          {label}
-        </p>
-        <p className="text-sm sm:text-base font-bold truncate break-words" style={{ color }}>{value}</p>
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
 // LIVE TAB
-// ═══════════════════════════════════════════════════════════════════════════
-function LiveTab({ info, step, objects, safety, log, ws }) {
+// ═════════════════════════════════════════════════════════════════════════════
+function LiveTab({ info, step, objects, safety, log }) {
   const total = info?.steps || 4;
+  const pct = step !== null ? Math.round(((step + 1) / total) * 100) : 0;
 
   return (
-    <div className="space-y-6 sm:space-y-8">
-      {/* Page title */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+      {/* Title */}
       <div>
-        <h1 className="text-xl sm:text-2xl font-bold tracking-tight" style={{ color: '#f1f5f9' }}>Live Experiment</h1>
-        <p className="text-xs sm:text-sm mt-1" style={{ color: '#64748b' }}>Real-time experiment progress, detections, and safety status</p>
+        <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em' }}>Live Experiment</h1>
+        <p style={{ fontSize: 13, color: T.textDim, marginTop: 4 }}>Real-time progress, detections, and safety monitoring</p>
       </div>
 
-      {/* Key metrics — responsive grid */}
-      <section>
-        <h2 className="text-xs font-semibold uppercase tracking-wider mb-3 sm:mb-4" style={{ color: '#64748b' }}>Key metrics</h2>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          <StatCard icon="🔬" label="Experiment" value={info?.name || 'Waiting...'} delayMs={60} />
-          <StatCard icon="📍" label="Current Step" value={step !== null ? `${step + 1} of ${total}` : 'Not started'} color="#00d4aa" delayMs={120} />
-          <StatCard icon="👁️" label="Detections" value={objects.length.toString()} color={objects.length > 0 ? '#00d4aa' : '#64748b'} delayMs={180} />
-          <StatCard icon="🛡️" label="Safety Alerts" value={safety.length.toString()} color={safety.length > 0 ? '#ef4444' : '#22c55e'} delayMs={240} />
+      {/* ── Stat cards ─────────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+        <Stat icon="🔬" label="Experiment" value={info?.name || 'Waiting...'} delay={0.05} />
+        <Stat icon="📍" label="Current Step" value={step !== null ? `${step + 1} of ${total}` : '—'} color={T.accent} delay={0.1} />
+        <Stat icon="👁" label="Detections" value={objects.length} color={objects.length > 0 ? T.accent : T.textDim} delay={0.15} />
+        <Stat icon="🛡" label="Safety" value={safety.length > 0 ? `${safety.length} Alert${safety.length > 1 ? 's' : ''}` : 'Clear'} color={safety.length > 0 ? T.danger : T.success} delay={0.2} />
+      </div>
+
+      {/* ── Step Progress (horizontal) ─────────────────────────────── */}
+      <Card delay={0.12}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>📋 Step Progress</h3>
+          <span style={{ fontSize: 12, fontWeight: 700, color: T.accent }}>{pct}%</span>
         </div>
-      </section>
 
-      {/* Two-column layout — stacks on mobile/tablet */}
-      <section className="grid grid-cols-1 xl:grid-cols-12 gap-4 sm:gap-6">
-        {/* Left column: Steps + Detections */}
-        <div className="xl:col-span-5 space-y-4 sm:space-y-6">
-          <Card glow style={{ animation: 'fadeUp 0.4s ease-out both', animationDelay: '0.08s' }}>
-            <SectionHeader
-              icon="📋"
-              title="Step Timeline"
-              badge={step !== null ? `${Math.round(((step + 1) / total) * 100)}%` : null}
-            />
+        {/* Progress bar */}
+        <div style={{ height: 6, borderRadius: 99, background: T.surface2, marginBottom: 20 }}>
+          <div style={{
+            height: '100%', borderRadius: 99, transition: 'width 0.6s ease',
+            width: `${pct}%`,
+            background: `linear-gradient(90deg, ${T.accent}, #00a389)`,
+          }} />
+        </div>
 
-            <div className="space-y-0">
-              {STEP_NAMES.map((name, i) => {
-                const done = step !== null && i < step;
-                const active = step !== null && i === step;
+        {/* Step pills in a row */}
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${total}, 1fr)`, gap: 12 }}>
+          {STEP_NAMES.map((name, i) => {
+            const done = step !== null && i < step;
+            const active = step !== null && i === step;
+            return (
+              <div key={i} style={{
+                padding: '12px 14px', borderRadius: 10,
+                background: active ? T.accentDim : done ? 'rgba(0,212,170,0.06)' : T.surface2,
+                border: `1px solid ${active ? T.accent + '50' : done ? T.accent + '20' : T.border}`,
+                transition: 'all 0.3s',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <div style={{
+                    width: 24, height: 24, borderRadius: '50%', fontSize: 11, fontWeight: 700,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    background: done ? T.accent : active ? T.accent + '30' : T.border,
+                    color: done ? T.bg : active ? T.accent : T.textDim,
+                    animation: active ? 'glow 2s ease-in-out infinite' : 'none',
+                  }}>
+                    {done ? '✓' : i + 1}
+                  </div>
+                  <span style={{
+                    fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    color: active ? T.accent : done ? T.textDim : T.text,
+                    textDecoration: done ? 'line-through' : 'none',
+                  }}>{name}</span>
+                </div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: active ? T.accent : done ? T.success : T.textMuted, marginLeft: 32 }}>
+                  {active ? '● In progress' : done ? '✓ Complete' : 'Pending'}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* ── Row: Safety + Detected Objects ──────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+
+        {/* Safety Alerts */}
+        <Card danger={safety.length > 0} delay={0.18}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>🛡️ Safety</h3>
+            {safety.length > 0 && (
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                background: T.dangerDim, color: T.danger, border: `1px solid ${T.danger}30`,
+              }}>{safety.length} alert{safety.length > 1 ? 's' : ''}</span>
+            )}
+          </div>
+          {safety.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 220, overflowY: 'auto' }}>
+              {safety.map((a, i) => (
+                <div key={a.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10,
+                  background: T.dangerDim, border: `1px solid ${T.danger}20`,
+                  animation: `slide-in 0.3s ease-out ${i * 0.05}s both`,
+                }}>
+                  <span style={{ fontSize: 14 }}>🚨</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#fca5a5' }}>{a.msg}</div>
+                    <div style={{ fontSize: 10, color: T.textDim, marginTop: 2 }}>{fmt(a.time)}</div>
+                  </div>
+                  <span style={{
+                    fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4, textTransform: 'uppercase',
+                    background: a.sev === 'critical' ? `${T.danger}30` : 'rgba(249,115,22,0.2)',
+                    color: a.sev === 'critical' ? '#fca5a5' : '#fdba74',
+                  }}>{a.sev}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '28px 0' }}>
+              <div style={{ fontSize: 32, marginBottom: 6 }}>✅</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.success }}>All Clear</div>
+              <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>Following safety protocol</div>
+            </div>
+          )}
+        </Card>
+
+        {/* Detected Objects */}
+        <Card delay={0.22}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>👁️ Detections</h3>
+            {objects.length > 0 && (
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                background: T.accentDim, color: T.accent, border: `1px solid ${T.accent}30`,
+              }}>{objects.length} found</span>
+            )}
+          </div>
+          {objects.length > 0 ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {objects.map((obj, i) => {
+                const label = typeof obj === 'string' ? obj : obj.label || obj.name || obj.class || 'unknown';
+                const conf = typeof obj === 'object' ? obj.confidence || obj.conf : null;
                 return (
-                  <div key={i} className="flex gap-3 sm:gap-4">
-                    <div className="flex flex-col items-center">
-                      <div
-                        className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-xs sm:text-sm font-bold shrink-0 transition-all duration-500"
-                        style={{
-                          background: done ? '#00d4aa' : active ? 'rgba(0, 212, 170, 0.18)' : '#1a2332',
-                          color: done ? '#0a0f1e' : active ? '#00d4aa' : '#64748b',
-                          border: active ? '2px solid #00d4aa' : done ? 'none' : '1px solid #2a3444',
-                          boxShadow: active ? '0 0 0 4px rgba(0, 212, 170, 0.2)' : 'none',
-                          animation: active ? 'glowPulse 2s ease-in-out infinite' : 'none',
-                        }}
-                      >
-                        {done ? '✓' : i + 1}
-                      </div>
-                      {i < STEP_NAMES.length - 1 && (
-                        <div
-                          className="w-0.5 h-6 sm:h-8 rounded-full"
-                          style={{ background: done ? '#00d4aa' : '#1e2d3d' }}
-                        />
-                      )}
-                    </div>
-                    <div className="pt-1.5 sm:pt-2 pb-3 sm:pb-4">
-                      <p
-                        className="text-xs sm:text-sm font-semibold"
-                        style={{
-                          color: active ? '#00d4aa' : done ? '#64748b' : '#94a3b8',
-                          textDecoration: done ? 'line-through' : 'none',
-                        }}
-                      >
-                        {name}
-                      </p>
-                      {active && (
-                        <p className="text-xs mt-1" style={{ color: '#00d4aa' }}>
-                          🔄 In Progress...
-                        </p>
-                      )}
-                      {done && (
-                        <p className="text-xs mt-0.5" style={{ color: '#64748b' }}>
-                          ✓ Done
-                        </p>
-                      )}
-                    </div>
+                  <div key={`${label}-${i}`} style={{
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8,
+                    background: T.accentDim, border: `1px solid ${T.accent}25`, color: T.accent,
+                    fontSize: 12, fontWeight: 600,
+                    animation: `slide-in 0.3s ease-out ${i * 0.04}s both`,
+                  }}>
+                    {label}
+                    {conf != null && <span style={{ fontSize: 10, color: T.textDim, fontFamily: 'monospace' }}>{(conf * 100).toFixed(0)}%</span>}
                   </div>
                 );
               })}
             </div>
-
-            {step === null && (
-              <div className="text-center pt-3 sm:pt-4 mt-2" style={{ borderTop: '1px solid #1e2d3d' }}>
-                <p className="text-xs sm:text-sm" style={{ color: '#64748b' }}>⏳ Waiting for student...</p>
-              </div>
-            )}
-          </Card>
-
-          <Card glow style={{ animation: 'fadeUp 0.4s ease-out both', animationDelay: '0.12s' }}>
-            <SectionHeader icon="👁️" title="Detected Objects" />
-            {objects.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {objects.map((obj, i) => {
-                  const label = typeof obj === 'string' ? obj : obj.label || obj.name || obj.class || 'unknown';
-                  const conf = typeof obj === 'object' ? obj.confidence || obj.conf : null;
-                  return (
-                    <div
-                      key={`${label}-${i}`}
-                      className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs sm:text-sm font-semibold"
-                      style={{
-                        background: 'rgba(0, 212, 170, 0.1)',
-                        border: '1px solid rgba(0, 212, 170, 0.22)',
-                        color: '#00d4aa',
-                        animation: 'slideIn 0.35s ease-out both',
-                        animationDelay: `${i * 0.05}s`,
-                      }}
-                    >
-                      {label}
-                      {conf != null && (
-                        <span className="text-xs font-mono" style={{ color: '#64748b' }}>
-                          {(conf * 100).toFixed(0)}%
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-center py-6 sm:py-8">
-                <div className="text-3xl sm:text-4xl mb-2 sm:mb-3 opacity-40">📷</div>
-                <p className="text-xs sm:text-sm font-medium" style={{ color: '#64748b' }}>No objects detected</p>
-                <p className="text-[10px] sm:text-xs mt-1" style={{ color: '#475569' }}>Point phone camera at lab equipment</p>
-              </div>
-            )}
-          </Card>
-        </div>
-
-        {/* Right column: Safety + Event Log */}
-        <div className="xl:col-span-7 space-y-4 sm:space-y-6">
-          <Card danger={safety.length > 0} glow={safety.length === 0} style={{ animation: 'fadeUp 0.4s ease-out both', animationDelay: '0.08s' }}>
-            <div className="flex items-center justify-between gap-3 sm:gap-4 mb-4 sm:mb-5 flex-wrap">
-              <h3 className="text-xs sm:text-sm font-bold flex items-center gap-2 shrink-0" style={{ color: '#f1f5f9' }}>🛡️ Safety Alerts</h3>
-              {safety.length > 0 ? (
-                <div className="flex items-center gap-3 shrink-0">
-                  <span
-                    className="text-xs font-bold px-2.5 py-1 rounded-md"
-                    style={{
-                      background: 'rgba(239, 68, 68, 0.18)',
-                      color: '#ef4444',
-                      border: '1px solid rgba(239, 68, 68, 0.3)',
-                    }}
-                  >
-                    {safety.length}
-                  </span>
-                  <span className="text-xs font-bold" style={{ color: '#ef4444', animation: 'blinkDot 1.4s ease-in-out infinite' }}>⚠ ATTENTION</span>
-                </div>
-              ) : null}
+          ) : (
+            <div style={{ textAlign: 'center', padding: '28px 0' }}>
+              <div style={{ fontSize: 28, marginBottom: 6, opacity: 0.35 }}>📷</div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: T.textDim }}>No objects detected</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>Point camera at lab equipment</div>
             </div>
+          )}
+        </Card>
+      </div>
 
-            {safety.length > 0 ? (
-              <div className="space-y-3 max-h-48 sm:max-h-60 md:max-h-72 overflow-y-auto pr-1">
-                {safety.map((a, i) => (
-                  <div
-                    key={a.id}
-                    className="flex items-start gap-2 sm:gap-3 p-3 sm:p-4 rounded-lg sm:rounded-xl"
-                    style={{
-                      background: 'rgba(239, 68, 68, 0.08)',
-                      border: '1px solid rgba(239, 68, 68, 0.18)',
-                      animation: 'slideIn 0.35s ease-out both',
-                      animationDelay: `${(i + 1) * 0.06}s`,
-                    }}
-                  >
-                    <div
-                      className="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center shrink-0 text-xs sm:text-sm"
-                      style={{ background: 'rgba(239, 68, 68, 0.18)' }}
-                    >
-                      🚨
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs sm:text-sm font-semibold break-words" style={{ color: '#fca5a5' }}>{a.msg}</p>
-                      <p className="text-[10px] sm:text-xs mt-0.5 sm:mt-1" style={{ color: '#64748b' }}>{fmt(a.time)}</p>
-                    </div>
-                    <span
-                      className="text-[10px] sm:text-xs font-bold uppercase px-1.5 sm:px-2 py-0.5 rounded shrink-0"
-                      style={{
-                        background: a.sev === 'critical' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(249, 115, 22, 0.2)',
-                        color: a.sev === 'critical' ? '#fca5a5' : '#fdba74',
-                      }}
-                    >
-                      {a.sev}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-8 sm:py-10">
-                <div className="text-4xl sm:text-5xl mb-2 sm:mb-3">✅</div>
-                <p className="text-xs sm:text-sm font-bold" style={{ color: '#22c55e' }}>All Clear</p>
-                <p className="text-[10px] sm:text-xs mt-1" style={{ color: '#64748b' }}>Student is following safety protocol</p>
-              </div>
-            )}
-          </Card>
-
-          <Card glow style={{ animation: 'fadeUp 0.4s ease-out both', animationDelay: '0.12s' }}>
-            <SectionHeader icon="📜" title="Event Log" badge={log.length > 0 ? `${log.length} events` : null} badgeStyle={{ background: 'rgba(100, 116, 139, 0.15)', color: '#94a3b8', border: '1px solid rgba(100, 116, 139, 0.25)' }} />
-
-            {log.length > 0 ? (
-              <div className="space-y-2 max-h-56 sm:max-h-64 md:max-h-80 overflow-y-auto pr-1">
-                {log.map((e, i) => {
-                  const colors = { danger: '#ef4444', step: '#00d4aa', success: '#22c55e', info: '#64748b' };
-                  const icons = { danger: '🚨', step: '📍', success: '🎉', info: 'ℹ️' };
-                  const c = colors[e.type] || '#64748b';
-                  const r = c === '#ef4444' ? '239, 68, 68' : c === '#00d4aa' ? '0, 212, 170' : c === '#22c55e' ? '34, 197, 94' : '100, 116, 139';
-                  return (
-                    <div
-                      key={e.id}
-                      className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 sm:py-2.5 rounded-lg sm:rounded-xl"
-                      style={{
-                        background: `rgba(${r}, 0.08)`,
-                        borderLeft: `3px solid ${c}`,
-                        animation: 'slideIn 0.35s ease-out both',
-                        animationDelay: `${Math.min(i + 1, 5) * 0.06}s`,
-                      }}
-                    >
-                      <span className="text-[10px] sm:text-xs shrink-0">{icons[e.type] || 'ℹ️'}</span>
-                      <span className="flex-1 text-xs sm:text-sm truncate min-w-0" style={{ color: '#e2e8f0' }}>{e.msg}</span>
-                      <span className="text-[10px] sm:text-xs font-mono shrink-0" style={{ color: '#64748b' }}>{fmt(e.time)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-center py-8 sm:py-10">
-                <div className="text-3xl sm:text-4xl mb-2 sm:mb-3 opacity-40">📭</div>
-                <p className="text-xs sm:text-sm font-medium" style={{ color: '#64748b' }}>No events yet</p>
-                <p className="text-[10px] sm:text-xs mt-1" style={{ color: '#475569' }}>Events appear when the experiment starts</p>
-              </div>
-            )}
-          </Card>
+      {/* ── Event Log (full width) ──────────────────────────────────── */}
+      <Card delay={0.26}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>📜 Event Log</h3>
+          {log.length > 0 && (
+            <span style={{ fontSize: 11, fontWeight: 600, color: T.textDim }}>{log.length} events</span>
+          )}
         </div>
-      </section>
+        {log.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 280, overflowY: 'auto' }}>
+            {log.map((e, i) => {
+              const colors = { danger: T.danger, step: T.accent, success: T.success, info: T.textDim };
+              const icons = { danger: '🚨', step: '📍', success: '🎉', info: 'ℹ️' };
+              const c = colors[e.type] || T.textDim;
+              return (
+                <div key={e.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 8,
+                  background: `${c}10`, borderLeft: `3px solid ${c}`,
+                  animation: `slide-in 0.3s ease-out ${Math.min(i, 4) * 0.05}s both`,
+                }}>
+                  <span style={{ fontSize: 11, flexShrink: 0 }}>{icons[e.type] || 'ℹ️'}</span>
+                  <span style={{ flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{e.msg}</span>
+                  <span style={{ fontSize: 11, color: T.textDim, fontFamily: 'monospace', flexShrink: 0 }}>{fmt(e.time)}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ textAlign: 'center', padding: '28px 0' }}>
+            <div style={{ fontSize: 28, marginBottom: 6, opacity: 0.35 }}>📭</div>
+            <div style={{ fontSize: 13, fontWeight: 500, color: T.textDim }}>No events yet</div>
+            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>Events appear when the experiment starts</div>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
+// STAT CARD
+// ═════════════════════════════════════════════════════════════════════════════
+function Stat({ icon, label, value, color = T.accent, delay = 0 }) {
+  return (
+    <div style={{
+      background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12,
+      padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12,
+      animation: `fadeIn 0.4s ease-out ${delay}s both`,
+    }}>
+      <div style={{
+        width: 38, height: 38, borderRadius: 10,
+        background: `${color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 16, flexShrink: 0,
+      }}>{icon}</div>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 10, fontWeight: 600, color: T.textDim, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>{label}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
+      </div>
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // STUDENTS TAB
-// ═══════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
 function StudentsTab() {
   const sc = {
-    active: { bg: 'rgba(0, 212, 170, 0.12)', color: '#00d4aa', dot: '#00d4aa', label: 'Active' },
-    idle: { bg: 'rgba(100, 116, 139, 0.12)', color: '#64748b', dot: '#64748b', label: 'Idle' },
-    completed: { bg: 'rgba(34, 197, 94, 0.12)', color: '#22c55e', dot: '#22c55e', label: 'Done' },
-    safety_alert: { bg: 'rgba(239, 68, 68, 0.12)', color: '#ef4444', dot: '#ef4444', label: 'Alert' },
+    active: { bg: T.accentDim, color: T.accent, label: 'Active' },
+    idle: { bg: `${T.textDim}18`, color: T.textDim, label: 'Idle' },
+    completed: { bg: `${T.success}18`, color: T.success, label: 'Done' },
+    safety_alert: { bg: T.dangerDim, color: T.danger, label: 'Alert' },
   };
 
   return (
-    <div className="space-y-6 sm:space-y-8">
-      {/* Page header */}
-      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight" style={{ color: '#f1f5f9' }}>Class Overview</h1>
-          <p className="text-xs sm:text-sm mt-1" style={{ color: '#64748b' }}>
-            Monitoring {MOCK_STUDENTS.length} students • 4 languages supported
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {Object.entries(sc).map(([k, v]) => {
-            const n = MOCK_STUDENTS.filter((s) => s.status === k).length;
-            return n > 0 ? (
-              <div
-                key={k}
-                className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg min-h-[40px] sm:min-h-0"
-                style={{ background: v.bg, border: `1px solid ${v.color}40` }}
-              >
-                <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full shrink-0" style={{ background: v.dot }} />
-                <span className="text-[10px] sm:text-xs font-bold" style={{ color: v.color }}>{n} {v.label}</span>
-              </div>
-            ) : null;
-          })}
-        </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <div>
+        <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em' }}>Class Overview</h1>
+        <p style={{ fontSize: 13, color: T.textDim, marginTop: 4 }}>
+          Monitoring {MOCK_STUDENTS.length} students • 4 languages supported
+        </p>
       </div>
 
-      {/* Student cards grid */}
-      <section>
-        <h2 className="text-xs font-semibold uppercase tracking-wider mb-3 sm:mb-4" style={{ color: '#64748b' }}>Students</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-6">
-          {MOCK_STUDENTS.map((st, i) => {
-            const s = sc[st.status] || sc.idle;
-            const pct = Math.round((st.step / st.total) * 100);
-            return (
-              <div
-                key={st.id}
-                className="rounded-xl sm:rounded-2xl p-4 sm:p-6 transition-all duration-300"
-                style={{
-                  background: '#111828',
-                  border: '1px solid #1e2d3d',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-                  animation: 'fadeUp 0.5s ease-out both',
-                  animationDelay: `${(i + 1) * 0.06}s`,
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(0, 212, 170, 0.35)';
-                  e.currentTarget.style.transform = 'translateY(-2px)';
-                  e.currentTarget.style.boxShadow = '0 8px 24px rgba(0,0,0,0.35)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = '#1e2d3d';
-                  e.currentTarget.style.transform = 'translateY(0)';
-                  e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.2)';
-                }}
-              >
-                <div className="flex items-center justify-between gap-2 mb-4 sm:mb-5 flex-wrap">
-                  <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                    <div
-                      className="w-9 h-9 sm:w-11 sm:h-11 rounded-full flex items-center justify-center text-xs sm:text-sm font-bold shrink-0"
-                      style={{
-                        color: '#f1f5f9',
-                        background: 'linear-gradient(135deg, rgba(0, 212, 170, 0.35), rgba(59, 130, 246, 0.35))',
-                      }}
-                    >
-                      {st.name.charAt(0)}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs sm:text-sm font-bold truncate" style={{ color: '#f1f5f9' }}>{st.name}</p>
-                      <p className="text-[10px] sm:text-xs font-mono truncate" style={{ color: '#64748b' }}>{st.id}</p>
-                    </div>
-                  </div>
-                  <div
-                    className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-full shrink-0"
-                    style={{ background: s.bg, border: `1px solid ${s.color}33` }}
-                  >
-                    <div
-                      className="w-1.5 h-1.5 rounded-full"
-                      style={{
-                        background: s.dot,
-                        animation: st.status === 'active' ? 'blinkDot 1.4s ease-in-out infinite' : 'none',
-                      }}
-                    />
-                    <span className="text-xs font-bold" style={{ color: s.color }}>{s.label}</span>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {Object.entries(sc).map(([k, v]) => {
+          const n = MOCK_STUDENTS.filter((s) => s.status === k).length;
+          return n > 0 ? (
+            <div key={k} style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 8,
+              background: v.bg, border: `1px solid ${v.color}30`, fontSize: 11, fontWeight: 700, color: v.color,
+            }}>
+              <div style={{ width: 6, height: 6, borderRadius: '50%', background: v.color }} />
+              {n} {v.label}
+            </div>
+          ) : null;
+        })}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
+        {MOCK_STUDENTS.map((st, i) => {
+          const s = sc[st.status] || sc.idle;
+          const pct = Math.round((st.step / st.total) * 100);
+          return (
+            <Card key={st.id} delay={i * 0.06}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                  <div style={{
+                    width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg, rgba(0,212,170,0.3), rgba(59,130,246,0.3))', flexShrink: 0,
+                  }}>{st.name.charAt(0)}</div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{st.name}</div>
+                    <div style={{ fontSize: 11, color: T.textDim, fontFamily: 'monospace' }}>{st.id}</div>
                   </div>
                 </div>
-
-                <div className="mb-3 sm:mb-4">
-                  <div className="flex justify-between text-[10px] sm:text-xs mb-1.5 sm:mb-2">
-                    <span style={{ color: '#64748b' }}>Step {st.step} / {st.total}</span>
-                    <span className="font-bold" style={{ color: '#00d4aa' }}>{pct}%</span>
-                  </div>
-                  <div className="w-full h-1.5 sm:h-2 rounded-full" style={{ background: '#1a2332' }}>
-                    <div
-                      className="h-full rounded-full transition-all duration-700"
-                      style={{ width: `${pct}%`, background: 'linear-gradient(90deg, #00d4aa, #00a389)' }}
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className="text-[10px] sm:text-xs font-medium" style={{ color: '#64748b' }}>🌐 {st.lang}</span>
-                  {st.alerts > 0 && (
-                    <div
-                      className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-lg"
-                      style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)' }}
-                    >
-                      <span className="text-[10px] sm:text-xs">⚠️</span>
-                      <span className="text-[10px] sm:text-xs font-bold" style={{ color: '#ef4444' }}>
-                        {st.alerts} alert{st.alerts > 1 ? 's' : ''}
-                      </span>
-                    </div>
-                  )}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 5, padding: '3px 10px', borderRadius: 99,
+                  background: s.bg, border: `1px solid ${s.color}30`, fontSize: 11, fontWeight: 700, color: s.color, flexShrink: 0,
+                }}>
+                  <div style={{
+                    width: 5, height: 5, borderRadius: '50%', background: s.color,
+                    animation: st.status === 'active' ? 'pulse-dot 1.4s ease-in-out infinite' : 'none',
+                  }} />
+                  {s.label}
                 </div>
               </div>
-            );
-          })}
-        </div>
-      </section>
+
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 6 }}>
+                  <span style={{ color: T.textDim }}>Step {st.step}/{st.total}</span>
+                  <span style={{ fontWeight: 700, color: T.accent }}>{pct}%</span>
+                </div>
+                <div style={{ height: 5, borderRadius: 99, background: T.surface2 }}>
+                  <div style={{ height: '100%', borderRadius: 99, width: `${pct}%`, background: `linear-gradient(90deg, ${T.accent}, #00a389)`, transition: 'width 0.6s' }} />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 11, color: T.textDim }}>🌐 {st.lang}</span>
+                {st.alerts > 0 && (
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+                    background: T.dangerDim, color: T.danger, border: `1px solid ${T.danger}20`,
+                  }}>⚠ {st.alerts}</span>
+                )}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
 // LIBRARY TAB
-// ═══════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
 function LibraryTab() {
   const dc = {
-    Beginner: { color: '#22c55e', rgb: '34, 197, 94' },
-    Intermediate: { color: '#eab308', rgb: '234, 179, 8' },
-    Advanced: { color: '#ef4444', rgb: '239, 68, 68' },
+    Beginner: { color: T.success },
+    Intermediate: { color: '#eab308' },
+    Advanced: { color: T.danger },
   };
   const si = { Chemistry: '⚗️', Physics: '⚡', Biology: '🧬' };
 
   return (
-    <div className="space-y-6 sm:space-y-8">
-      {/* Page header */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <div>
-        <h1 className="text-xl sm:text-2xl font-bold tracking-tight" style={{ color: '#f1f5f9' }}>Experiment Library</h1>
-        <p className="text-xs sm:text-sm mt-1" style={{ color: '#64748b' }}>
+        <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em' }}>Experiment Library</h1>
+        <p style={{ fontSize: 13, color: T.textDim, marginTop: 4 }}>
           {EXPERIMENTS.length} experiments • {EXPERIMENTS.filter((e) => e.active).length} live now
         </p>
       </div>
 
-      {/* Experiment cards grid */}
-      <section>
-        <h2 className="text-xs font-semibold uppercase tracking-wider mb-3 sm:mb-4" style={{ color: '#64748b' }}>All experiments</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-6">
-          {EXPERIMENTS.map((exp, i) => {
-            const diffStyle = dc[exp.diff] || { color: '#64748b', rgb: '100, 116, 139' };
-            const color = diffStyle.color;
-            return (
-              <div
-                key={exp.id}
-                className="rounded-xl sm:rounded-2xl p-4 sm:p-6 relative overflow-hidden transition-all duration-300"
-                style={{
-                  background: '#111828',
-                  border: `1px solid ${exp.active ? 'rgba(0, 212, 170, 0.3)' : '#1e2d3d'}`,
-                  boxShadow: exp.active ? '0 0 20px rgba(0, 212, 170, 0.06)' : '0 1px 3px rgba(0,0,0,0.2)',
-                  animation: 'fadeUp 0.5s ease-out both',
-                  animationDelay: `${(i + 1) * 0.06}s`,
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(0, 212, 170, 0.4)';
-                  e.currentTarget.style.transform = 'translateY(-2px)';
-                  e.currentTarget.style.boxShadow = '0 8px 24px rgba(0,0,0,0.35)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = exp.active ? 'rgba(0, 212, 170, 0.3)' : '#1e2d3d';
-                  e.currentTarget.style.transform = 'translateY(0)';
-                  e.currentTarget.style.boxShadow = exp.active ? '0 0 20px rgba(0, 212, 170, 0.06)' : '0 1px 3px rgba(0,0,0,0.2)';
-                }}
-              >
-                {exp.active && (
-                  <div className="absolute top-3 right-3 sm:top-4 sm:right-4">
-                    <span
-                      className="flex items-center gap-1.5 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full text-[10px] sm:text-xs font-bold"
-                      style={{
-                        background: 'rgba(0, 212, 170, 0.15)',
-                        color: '#00d4aa',
-                        border: '1px solid rgba(0, 212, 170, 0.3)',
-                      }}
-                    >
-                      <span
-                        className="w-1.5 h-1.5 rounded-full"
-                        style={{ background: '#00d4aa', animation: 'blinkDot 1.4s ease-in-out infinite' }}
-                      />
-                      LIVE
-                    </span>
-                  </div>
-                )}
-
-                <div className="flex items-center gap-3 sm:gap-4 mb-4 sm:mb-5">
-                  <div
-                    className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg sm:rounded-xl flex items-center justify-center text-xl sm:text-2xl shrink-0"
-                    style={{ background: '#1a2332' }}
-                  >
-                    {si[exp.subject] || '🔬'}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-[10px] sm:text-xs font-bold uppercase tracking-widest" style={{ color: '#64748b' }}>
-                      {exp.subject}
-                    </p>
-                    <h3 className="text-sm sm:text-base font-bold mt-0.5 truncate" style={{ color: '#f1f5f9' }}>{exp.name}</h3>
-                  </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
+        {EXPERIMENTS.map((exp, i) => {
+          const d = dc[exp.diff] || { color: T.textDim };
+          return (
+            <Card key={exp.id} delay={i * 0.06} style={{ position: 'relative' }}>
+              {exp.active && (
+                <div style={{
+                  position: 'absolute', top: 14, right: 14,
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  padding: '3px 10px', borderRadius: 99,
+                  background: T.accentDim, border: `1px solid ${T.accent}35`,
+                  fontSize: 10, fontWeight: 700, color: T.accent,
+                }}>
+                  <div style={{
+                    width: 5, height: 5, borderRadius: '50%', background: T.accent,
+                    animation: 'pulse-dot 1.4s ease-in-out infinite',
+                  }} />
+                  LIVE
                 </div>
+              )}
 
-                <div className="flex items-center gap-2 sm:gap-3 mb-4 sm:mb-5 flex-wrap">
-                  <span
-                    className="text-[10px] sm:text-xs font-bold px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full"
-                    style={{
-                      background: `rgba(${diffStyle.rgb}, 0.12)`,
-                      color: diffStyle.color,
-                      border: `1px solid rgba(${diffStyle.rgb}, 0.35)`,
-                    }}
-                  >
-                    {exp.diff}
-                  </span>
-                  <span className="text-[10px] sm:text-xs" style={{ color: '#64748b' }}>📋 {exp.steps} steps</span>
-                </div>
-
-                <div className="flex items-center justify-between gap-2 pt-3 sm:pt-4 flex-wrap" style={{ borderTop: '1px solid #1e2d3d' }}>
-                  <span className="text-[10px] sm:text-xs" style={{ color: '#64748b' }}>
-                    {exp.active ? `👥 ${exp.students} students` : 'No sessions'}
-                  </span>
-                  <button
-                    className="text-xs font-bold px-3 sm:px-4 py-2 rounded-lg transition-all duration-200 min-h-[44px] touch-manipulation"
-                    style={{
-                      background: exp.active ? '#00d4aa' : '#1a2332',
-                      color: exp.active ? '#0a0f1e' : '#64748b',
-                      border: exp.active ? 'none' : '1px solid #2a3444',
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!exp.active) {
-                        e.currentTarget.style.background = '#2a3444';
-                        e.currentTarget.style.color = '#f1f5f9';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!exp.active) {
-                        e.currentTarget.style.background = '#1a2332';
-                        e.currentTarget.style.color = '#64748b';
-                      }
-                    }}
-                  >
-                    {exp.active ? 'View Live →' : 'Start'}
-                  </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 20, background: T.surface2, flexShrink: 0,
+                }}>{si[exp.subject] || '🔬'}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: T.textDim, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{exp.subject}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{exp.name}</div>
                 </div>
               </div>
-            );
-          })}
-        </div>
-      </section>
+
+              <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 99,
+                  background: `${d.color}18`, color: d.color, border: `1px solid ${d.color}35`,
+                }}>{exp.diff}</span>
+                <span style={{ fontSize: 11, color: T.textDim, display: 'flex', alignItems: 'center', gap: 4 }}>📋 {exp.steps} steps</span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 12, borderTop: `1px solid ${T.border}` }}>
+                <span style={{ fontSize: 11, color: T.textDim }}>
+                  {exp.active ? `👥 ${exp.students} students` : 'No sessions'}
+                </span>
+                <button style={{
+                  padding: '7px 16px', borderRadius: 8, fontSize: 12, fontWeight: 700,
+                  background: exp.active ? T.accent : T.surface2,
+                  color: exp.active ? T.bg : T.textDim,
+                  border: exp.active ? 'none' : `1px solid ${T.border}`,
+                  cursor: 'pointer', transition: 'all 0.2s',
+                }}>
+                  {exp.active ? 'View Live →' : 'Start'}
+                </button>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
