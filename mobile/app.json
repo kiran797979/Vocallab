@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "VocalLab",
+    "slug": "vocallab",
+    "version": "2.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "backgroundColor": "#0a0a0a"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "VocalLab needs camera to detect lab equipment in real-time"
+        }
+      ]
+    ],
+    "android": {
+      "permissions": [
+        "CAMERA"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#0a0a0a"
+      }
+    },
+    "ios": {
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "VocalLab needs camera to detect lab equipment",
+        "NSMicrophoneUsageDescription": "VocalLab may use microphone for voice features"
+      }
+    },
+    "extra": {
+      "backendUrl": "http://172.20.10.2:8000",
+      "wsUrl": "ws://172.20.10.2:8000/ws/student"
+    }
+  }
+}
