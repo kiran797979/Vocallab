@@ -44,7 +44,7 @@
 | **Backend** | FastAPI + Python 3.10+ | REST/WebSocket server, orchestration |
 | **Detection** | YOLOv8 (Ultralytics) | Real-time object detection |
 | **Mobile** | React Native (Expo) | Camera, audio, haptic feedback |
-| **Dashboard** | React + Vite + Tailwind v4 | Instructor monitoring interface |
+| **Dashboard** | React + Vite + Tailwind CSS v4 | Real-time instructor monitoring interface |
 | **Voice** | Google TTS (gTTS) | Multi-language audio generation |
 | **Hardware** | AMD Ryzen™ AI | Accelerated AI inference |
 
@@ -62,12 +62,15 @@
 - Auto-reconnecting WebSocket
 
 ### 📊 Instructor Dashboard
-- Live experiment progress with step timeline
-- Detected objects panel with confidence scores
-- Safety alerts log with severity levels
-- Real-time event log
-- Class overview with mock student cards
-- Experiment library browser
+- **Horizontal step progress** with animated progress bar and step pills
+- **4 stat cards** — experiment name, current step, detections, safety status
+- **Safety alerts** panel with severity badges and timestamps
+- **Detected objects** panel with confidence scores and animated tags
+- **Event log** — full-width, color-coded, chronological event feed
+- **Class overview** — student cards with progress bars and status indicators
+- **Experiment library** — browsable card grid with difficulty badges and live indicators
+- **Glassmorphic header** with live connection status and AMD Ryzen™ AI badge
+- **Stable WebSocket** connection (no reconnect storms)
 
 ### 🖥️ Backend
 - ConnectionManager for multiple students + dashboards
@@ -186,8 +189,8 @@ vocallab/
 │   └── package.json
 ├── dashboard/
 │   ├── src/
-│   │   ├── App.jsx              # React dashboard
-│   │   ├── index.css            # Tailwind + custom styles
+│   │   ├── App.jsx              # React dashboard (inline design system)
+│   │   ├── index.css            # Tailwind v4 + animations + grid rules
 │   │   └── main.jsx             # Entry point
 │   ├── index.html
 │   ├── vite.config.js
