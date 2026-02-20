@@ -183,6 +183,109 @@ body,
   }
 }
 
+@keyframes spinBorder {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes logoGlow {
+
+  0%,
+  100% {
+    box-shadow:
+      0 0 10px rgba(0, 212, 170, 0.35),
+      0 0 24px rgba(0, 212, 170, 0.15),
+      0 0 2px rgba(59, 130, 246, 0.4);
+  }
+
+  50% {
+    box-shadow:
+      0 0 20px rgba(0, 212, 170, 0.6),
+      0 0 45px rgba(0, 212, 170, 0.25),
+      0 0 6px rgba(168, 85, 247, 0.5);
+  }
+}
+
+@keyframes textShimmer {
+  0% {
+    background-position: -200% center;
+  }
+
+  100% {
+    background-position: 200% center;
+  }
+}
+
+@keyframes haloSpin {
+  from {
+    transform: rotate(0deg);
+    opacity: 0.6;
+  }
+
+  50% {
+    opacity: 1;
+  }
+
+  to {
+    transform: rotate(360deg);
+    opacity: 0.6;
+  }
+}
+
+/* ── Logo Badge ─────────────────────────────────────────────────────── */
+.logo-badge {
+  position: relative;
+  animation: logoGlow 3s ease-in-out infinite;
+}
+
+/* Spinning conic-gradient ring behind the badge */
+.logo-badge::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 15px;
+  background: conic-gradient(from 0deg,
+      #00d4aa,
+      #3b82f6,
+      #a855f7,
+      #00d4aa);
+  animation: spinBorder 3s linear infinite;
+  z-index: -1;
+  filter: blur(1px);
+}
+
+/* Inner mask to keep the badge shape */
+.logo-badge::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: 11px;
+  background: #060a13;
+  z-index: -1;
+}
+
+/* ── Logo Text Shimmer ──────────────────────────────────────────────── */
+.logo-text {
+  background: linear-gradient(90deg,
+      #00d4aa 0%,
+      #7dd3fc 20%,
+      #ffffff 40%,
+      #a855f7 60%,
+      #3b82f6 80%,
+      #00d4aa 100%);
+  background-size: 300% auto;
+  animation: textShimmer 3.5s linear infinite;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  filter: drop-shadow(0 0 8px rgba(0, 212, 170, 0.5));
+}
+
 /* ── Animated Mesh Background ───────────────────────────────────────── */
 .mesh-bg {
   position: fixed;

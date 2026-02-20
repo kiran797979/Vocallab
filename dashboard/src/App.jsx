@@ -155,16 +155,15 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 64 }}>
             {/* Logo */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <div style={{
+              <div className="logo-badge" style={{
                 width: 40, height: 40, borderRadius: 12,
                 background: `linear-gradient(135deg, ${C.accent}, ${C.blue})`,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontWeight: 900, fontSize: 18, color: '#fff',
-                boxShadow: `0 0 20px rgba(${C.accentRgb}, 0.3)`,
               }}>V</div>
               <div>
-                <div style={{ fontWeight: 800, fontSize: 18, letterSpacing: '-0.02em' }}>
-                  Vocal<span className="gradient-text">Lab</span>
+                <div style={{ fontWeight: 800, fontSize: 20, letterSpacing: '-0.03em' }}>
+                  <span style={{ color: '#e2e8f0' }}>Vocal</span><span className="logo-text">Lab</span>
                 </div>
                 <div style={{ fontSize: 10, color: C.dim, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Instructor Dashboard</div>
               </div>
