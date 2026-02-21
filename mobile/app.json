@@ -2,39 +2,55 @@
   "expo": {
     "name": "VocalLab",
     "slug": "vocallab",
-    "version": "2.0.0",
+    "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "dark",
     "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
     "splash": {
-      "backgroundColor": "#0a0a0a"
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#060a13"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.vocallab.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "VocalLab needs camera access to detect lab equipment.",
+        "NSMicrophoneUsageDescription": "VocalLab needs microphone access for voice instructions."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#060a13"
+      },
+      "package": "com.vocallab.app",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "extra": {
+      "backendUrl": "http://10.103.126.137:8000",
+      "wsUrl": "ws://10.103.126.137:8000/ws/student"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       [
         "expo-camera",
         {
-          "cameraPermission": "VocalLab needs camera to detect lab equipment in real-time"
+          "cameraPermission": "Allow VocalLab to use the camera"
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow VocalLab to use the microphone"
         }
       ]
-    ],
-    "android": {
-      "permissions": [
-        "CAMERA"
-      ],
-      "adaptiveIcon": {
-        "backgroundColor": "#0a0a0a"
-      }
-    },
-    "ios": {
-      "supportsTablet": false,
-      "infoPlist": {
-        "NSCameraUsageDescription": "VocalLab needs camera to detect lab equipment",
-        "NSMicrophoneUsageDescription": "VocalLab may use microphone for voice features"
-      }
-    },
-    "extra": {
-      "backendUrl": "http://172.20.10.2:8000",
-      "wsUrl": "ws://172.20.10.2:8000/ws/student"
-    }
+    ]
   }
 }
