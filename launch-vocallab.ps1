@@ -16,9 +16,9 @@ $DashDir = Join-Path $ProjectRoot "dashboard"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location -Path '$DashDir'; npm run dev"
 
 # 3. Start Mobile
-Write-Host "Starting Mobile (Expo Tunnel)..." -ForegroundColor Yellow
+Write-Host "Starting Mobile (LAN Mode)..." -ForegroundColor Yellow
 $MobileDir = Join-Path $ProjectRoot "mobile"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location -Path '$MobileDir'; npm run tunnel"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location -Path '$MobileDir'; npx expo start --lan -c"
 
 Write-Host "All systems are starting in separate windows!" -ForegroundColor Green
 Write-Host "----------------------------------------------------"
