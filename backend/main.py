@@ -231,6 +231,38 @@ app.add_middleware(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# REQUEST LOGGING MIDDLEWARE
+# ═══════════════════════════════════════════════════════════════════════
+@app.middleware("http")
+async def log_requests(request, call_next):
+    t0 = time.time()
+    try:
+        response = await call_next(request)
+        elapsed = round((time.time() - t0) * 1000, 1)
+        if not request.url.path.startswith("/audio"):   # skip static file noise
+            print(f"   [HTTP] {request.method} {request.url.path} → {response.status_code}  ({elapsed}ms)")
+        return response
+    except Exception as exc:
+        elapsed = round((time.time() - t0) * 1000, 1)
+        print(f"   [HTTP] {request.method} {request.url.path} → 500 UNHANDLED ({elapsed}ms): {exc}")
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(exc), "path": request.url.path})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# GLOBAL ERROR HANDLER — server never crashes
+# ═══════════════════════════════════════════════════════════════════════
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    print(f"   [ERR] Unhandled exception on {request.url.path}: {exc}")
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal server error", "detail": str(exc), "path": str(request.url.path)},
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # REST ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════
 @app.get("/")

@@ -32,8 +32,8 @@
       ]
     },
     "extra": {
-      "backendUrl": "http://10.103.126.137:8000",
-      "wsUrl": "ws://10.103.126.137:8000/ws/student"
+      "backendUrl": "http://172.20.10.2:8000",
+      "wsUrl": "ws://172.20.10.2:8000/ws/student"
     },
     "web": {
       "favicon": "./assets/favicon.png"
