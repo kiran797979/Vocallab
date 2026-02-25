@@ -6,7 +6,7 @@ YOLO_TO_LAB = {
     "cup": "measuring_cylinder",
     "bowl": "petri_dish",
     "spoon": "spatula",
-    "knife": "glass_rod",
+    "knife": "conical_flask",         # Changed from glass_rod — knife is now conical flask proxy
     "scissors": "tongs",
     "vase": "volumetric_flask",
     "person": "hand",
@@ -42,3 +42,7 @@ def get_all_lab_labels():
 def get_mapping_count():
     """Return total number of label mappings."""
     return len(YOLO_TO_LAB)
+
+
+# NOTE: glass_rod currently has no YOLO proxy assigned.
+# To re-enable, add e.g.: "knife": "glass_rod" or another COCO object.
