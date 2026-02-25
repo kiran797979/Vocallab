@@ -294,6 +294,16 @@ async def reset_experiment():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         **fsm.get_full_state(),
     })
+    await manager.broadcast_to_students({
+        "type": "welcome",
+        "server_version": VERSION,
+        "experiment_name": fsm.config["name"],
+        "total_steps": fsm.total_steps,
+        "current_step": fsm.current_step_index,
+        "step_info": fsm._build_step_info("en"),
+        "model_loaded": detector is not None and detector.model is not None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
     return {"status": "reset", "state": fsm.get_full_state()}
 
 
@@ -356,13 +366,22 @@ async def ws_student(websocket: WebSocket):
             if msg_type == "language_change":
                 language = msg.get("language", "en")
                 print(f"   [Main] Language changed to: {language}")
-                # Send updated step_info with new language
+                
+                audio_url = None
                 if fsm:
+                    # Reset intro tracker so it can play in the new language
+                    fsm.intro_played_for_step = -1 
+                    
                     info = fsm._build_step_info(language)
+                    step = fsm.get_current_step()
+                    if step and step.get("audio_intro"):
+                        audio_url = f"/audio/{language}/{step['audio_intro']}.mp3"
+                    
                     await websocket.send_text(json.dumps({
                         "type": "language_updated",
                         "language": language,
                         "step_info": info,
+                        "audio_url": audio_url
                     }))
                 continue
 
@@ -415,11 +434,11 @@ async def ws_student(websocket: WebSocket):
 
                         if fsm_result.get("step_advance"):
                             server_stats["step_advances"] += 1
-                            # Also send next step intro audio
+                            # Immediately queue the next step's intro audio
                             next_step = fsm.get_current_step()
-                            if next_step and next_step.get("audio_intro"):
-                                # Send advance audio first, intro will be queued
-                                pass
+                            if next_step and next_step.get("audio_intro") and not audio_url:
+                                audio_url = f"/audio/{language}/{next_step['audio_intro']}.mp3"
+                                fsm.intro_played_for_step = fsm.current_step_index
 
                         if fsm_result.get("safety_alert"):
                             server_stats["safety_alerts"] += 1

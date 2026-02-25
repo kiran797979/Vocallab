@@ -76,6 +76,7 @@ class ExperimentFSM:
         self.last_safety_alert_time = 0.0
         self.step_advances = 0
         self.safety_alerts_count = 0
+        self.intro_played_for_step = -1
 
         # Safety rules
         self.safety_rules = self.config.get("safety_rules") or {}
@@ -206,6 +207,11 @@ class ExperimentFSM:
 
         if not required.issubset(det_label_set):
             self.stable_count = 0
+            # Auto-trigger intro if not yet played for this step
+            if self.current_step_index != self.intro_played_for_step:
+                if step and step.get("audio_intro"):
+                    result["audio_to_play"] = step["audio_intro"]
+                    self.intro_played_for_step = self.current_step_index
             return result
 
         self.stable_count += 1

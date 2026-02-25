@@ -79,6 +79,8 @@ export default function App() {
   const isAudioPlaying = useRef(false);
   const safetyTimeout = useRef(null);
   const scanAnim = useRef(new Animated.Value(0)).current;
+  const serverIPRef = useRef(serverIP);
+  const wsReconnectAborted = useRef(false);
 
   const [permission, requestPermission] = useCameraPermissions();
   const lang = LANGS[langIdx];
@@ -100,13 +102,14 @@ export default function App() {
   }, [screen]);
 
   // ── Audio ────────────────────────────────────────────────────────
-  const playAudio = useCallback(async (url) => {
-    if (isAudioPlaying.current || !url) return;
+  const playAudio = useCallback(async (url, force = false) => {
+    if (!url) return;
+    if (isAudioPlaying.current && !force) return;
     try {
-      isAudioPlaying.current = true;
       if (audioRef.current) {
-        try { await audioRef.current.unloadAsync(); } catch (err) { }
+        try { await audioRef.current.stopAsync(); await audioRef.current.unloadAsync(); } catch (err) { }
       }
+      isAudioPlaying.current = true;
       const { sound } = await Audio.Sound.createAsync(
         { uri: url },
         { shouldPlay: true, volume: 1.0 }
@@ -147,11 +150,14 @@ export default function App() {
     step_status: info?.step_status ?? 'active',
   });
 
+  // ── Keep serverIPRef in sync so callbacks always have fresh IP ──────
+  useEffect(() => { serverIPRef.current = serverIP; }, [serverIP]);
+
   // ── Server Connection ──────────────────────────────────────────────
   const testConnection = useCallback(async () => {
     setConnecting(true);
     try {
-      const resp = await fetch(`http://${serverIP}/health`, {
+      const resp = await fetch(`http://${serverIPRef.current}/health`, {
         method: 'GET',
         headers: { 'Accept': 'application/json' }
       });
@@ -160,11 +166,11 @@ export default function App() {
       setExpName(data.fsm_state?.experiment_name || 'Chemistry Experiment');
     } catch (e) {
       setConnected(false);
-      Alert.alert('Connection Error', `Unable to reach ${serverIP}. Ensure server is running and device is on the same network.`);
+      Alert.alert('Connection Error', `Unable to reach ${serverIPRef.current}. Ensure server is running and device is on the same network.`);
     } finally {
       setConnecting(false);
     }
-  }, [serverIP]);
+  }, []);
 
   // ── WebSocket Messages ─────────────────────────────────────────────
   const onWSMessage = useCallback((evt) => {
@@ -174,15 +180,18 @@ export default function App() {
 
     switch (msg.type) {
       case 'welcome':
-      case 'experiment_loaded':
+      case 'experiment_loaded': {
         setFsmState(formatStep(msg.step_info, { current_step: msg.current_step, total_steps: msg.total_steps }));
         break;
-      case 'language_updated':
+      }
+      case 'language_updated': {
         if (msg.step_info) {
           setFsmState(prev => prev ? { ...prev, hint: msg.step_info.hint || prev.hint } : prev);
         }
+        if (msg.audio_url) playAudio(`http://${serverIPRef.current}${msg.audio_url}`, true);
         break;
-      case 'detection_result':
+      }
+      case 'detection_result': {
         const detections = msg.detections || [];
         setBoxes(detections);
         setDetCount(detections.length);
@@ -190,11 +199,17 @@ export default function App() {
         if (msg.frame_height) setFrameSize(s => ({ ...s, h: msg.frame_height }));
         if (msg.step_info) setFsmState(formatStep(msg.step_info));
         if (msg.safety_alert) showSafetyAlert(msg.safety_alert);
-        if (msg.audio_url) playAudio(`http://${serverIP}${msg.audio_url}`);
+        if (msg.audio_url) {
+          const force = !!msg.safety_alert || !!msg.step_advance;
+          playAudio(`http://${serverIPRef.current}${msg.audio_url}`, force);
+        }
         if (msg.experiment_complete) setExpDone(true);
         break;
+      }
+      default:
+        break;
     }
-  }, [serverIP, playAudio, showSafetyAlert]);
+  }, [playAudio, showSafetyAlert]);
 
   // ── Navigation ─────────────────────────────────────────────────────
   const startExperiment = useCallback(async () => {
@@ -226,10 +241,12 @@ export default function App() {
     if (screen !== 'experiment') return;
     let wsInstance;
     let isProcessingFrame = false;
+    wsReconnectAborted.current = false;
 
     const initWS = () => {
+      if (wsReconnectAborted.current) return; // stop reconnect after exit
       try {
-        wsInstance = new WebSocket(`ws://${serverIP}/ws/student`);
+        wsInstance = new WebSocket(`ws://${serverIPRef.current}/ws/student`);
         wsRef.current = wsInstance;
         wsInstance.onopen = () => {
           if (wsInstance.readyState === 1) {
@@ -239,19 +256,19 @@ export default function App() {
         wsInstance.onmessage = onWSMessage;
         wsInstance.onclose = () => {
           wsRef.current = null;
-          setTimeout(initWS, 3000);
+          if (!wsReconnectAborted.current) setTimeout(initWS, 3000);
         };
-        wsInstance.onerror = (e) => console.warn('[WS Error]', e.message);
+        wsInstance.onerror = (e) => console.warn('[WS Error]', e?.message);
       } catch (err) {
         console.error('[WS Init Fail]', err);
-        setTimeout(initWS, 3000);
+        if (!wsReconnectAborted.current) setTimeout(initWS, 3000);
       }
     };
 
     initWS();
 
     const captureFrame = async () => {
-      if (screen !== 'experiment') return;
+      if (wsReconnectAborted.current) return;
       if (camRef.current && wsRef.current?.readyState === 1 && !isProcessingFrame) {
         isProcessingFrame = true;
         try {
@@ -265,24 +282,25 @@ export default function App() {
             }));
           }
         } catch (e) {
-          console.warn('[Camera Capture Error]', e.message);
+          console.warn('[Camera Capture Error]', e?.message);
         } finally {
           isProcessingFrame = false;
         }
       }
-      loopRef.current = setTimeout(captureFrame, 700);
+      if (!wsReconnectAborted.current) loopRef.current = setTimeout(captureFrame, 700);
     };
 
     loopRef.current = setTimeout(captureFrame, 1200);
 
     return () => {
+      wsReconnectAborted.current = true;
       clearTimeout(loopRef.current);
       if (wsInstance) { try { wsInstance.close(); } catch (e) { } }
       wsRef.current = null;
-      if (audioRef.current) { try { audioRef.current.unloadAsync(); } catch (e) { } }
+      if (audioRef.current) { try { audioRef.current.stopAsync(); audioRef.current.unloadAsync(); } catch (e) { } }
       if (safetyTimeout.current) clearTimeout(safetyTimeout.current);
     };
-  }, [screen, serverIP, lang.code, onWSMessage]);
+  }, [screen, lang.code, onWSMessage]);
 
   const toggleLanguage = useCallback(() => {
     const nextIdx = (langIdx + 1) % LANGS.length;
