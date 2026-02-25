@@ -41,6 +41,11 @@ PROMPTS = {
         "safety_gloves": "कृपया सुरक्षा दस्ताने पहनें। रसायनों को नंगे हाथों से न छुएं।",
         "taking_too_long": "क्या आपको मदद चाहिए? अगर कोई समस्या है तो अपने शिक्षक से पूछें।",
         "experiment_complete": "बधाई हो! आपने अम्ल-क्षार अनुमापन प्रयोग सफलतापूर्वक पूरा कर लिया है। आपका प्रदर्शन बहुत अच्छा रहा। कृपया अपने उपकरण साफ करें और अपनी प्रयोग पुस्तिका में अवलोकन लिखें।",
+        # ── Transition audio ──────────────────────────────────────────────
+        "step_1_transition": "चरण 1 पूरा! बीकर को फ्रेम से हटाएं। चरण 2 के लिए तैयार हो जाएं।",
+        "step_2_transition": "चरण 2 पूरा! बीकर को फ्रेम से हटाएं। चरण 3 के लिए तैयार हो जाएं।",
+        "step_3_transition": "चरण 3 पूरा! बीकर को फ्रेम से हटाएं। अंतिम चरण के लिए तैयार हो जाएं।",
+        "step_4_transition": "प्रयोग पूरा! बधाई हो! आपने एसिड बेस अनुमापन सफलतापूर्वक पूरा कर लिया।",
     },
 
     # ── English (en) ─────────────────────────────────────────────────────
@@ -61,6 +66,11 @@ PROMPTS = {
         "safety_gloves": "Please wear safety gloves. Do not touch chemicals with bare hands.",
         "taking_too_long": "Do you need help? If you're stuck, please ask your instructor for guidance.",
         "experiment_complete": "Congratulations! You have successfully completed the Acid-Base Titration experiment. Your performance was excellent. Please clean your equipment and record all observations in your lab notebook.",
+        # ── Transition audio ──────────────────────────────────────────────
+        "step_1_transition": "Step 1 complete! Remove the beaker from the frame. Get ready for step 2.",
+        "step_2_transition": "Step 2 complete! Remove the beaker from the frame. Get ready for step 3.",
+        "step_3_transition": "Step 3 complete! Remove the beaker from the frame. Get ready for the final step.",
+        "step_4_transition": "Experiment complete! Congratulations! You have successfully completed the Acid Base Titration.",
     },
 
     # ── Telugu (te) ──────────────────────────────────────────────────────
@@ -81,6 +91,11 @@ PROMPTS = {
         "safety_gloves": "దయచేసి భద్రతా గ్లవ్స్ ధరించండి. రసాయనాలను చేతులతో తాకకండి.",
         "taking_too_long": "మీకు సహాయం కావాలా? ఏదైనా సమస్య ఉంటే మీ టీచర్‌ని అడగండి.",
         "experiment_complete": "అభినందనలు! మీరు ఆమ్ల-క్షార టైట్రేషన్ ప్రయోగాన్ని విజయవంతంగా పూర్తి చేశారు. మీ ప్రదర్శన అద్భుతంగా ఉంది. దయచేసి మీ పరికరాలను శుభ్రం చేసి, ప్రయోగ పుస్తకంలో పరిశీలనలు రాయండి.",
+        # ── Transition audio ──────────────────────────────────────────────
+        "step_1_transition": "స్టెప్ 1 పూర్తి! బీకర్ను ఫ్రేమ్ నుండి తీసేయండి. స్టెప్ 2 కి సిద్ధం కండి.",
+        "step_2_transition": "స్టెప్ 2 పూర్తి! బీకర్ను ఫ్రేమ్ నుండి తీసేయండి. స్టెప్ 3 కి సిద్ధం కండి.",
+        "step_3_transition": "స్టెప్ 3 పూర్తి! బీకర్ను ఫ్రేమ్ నుండి తీసేయండి. చివరి స్టెప్ కి సిద్ధం కండి.",
+        "step_4_transition": "ప్రయోగం పూర్తి! అభినందనలు! మీరు ఆమ్ల క్షార టైట్రేషన్ విజయవంతంగా పూర్తి చేశారు.",
     },
 
     # ── Tamil (ta) ───────────────────────────────────────────────────────
@@ -101,6 +116,11 @@ PROMPTS = {
         "safety_gloves": "பாதுகாப்பு கையுறைகள் அணியுங்கள். ரசாயனங்களை வெறும் கைகளால் தொடாதீர்கள்.",
         "taking_too_long": "உங்களுக்கு உதவி தேவையா? ஏதாவது பிரச்சனை இருந்தால் உங்கள் ஆசிரியரிடம் கேளுங்கள்.",
         "experiment_complete": "வாழ்த்துக்கள்! நீங்கள் அமில-காரம் டைட்ரேஷன் சோதனையை வெற்றிகரமாக முடித்துவிட்டீர்கள். உங்கள் செயல்திறன் அருமையாக இருந்தது. உபகரணங்களை சுத்தம் செய்து, சோதனை நோட்புக்கில் கவனிப்புகளை எழுதுங்கள்.",
+        # ── Transition audio ──────────────────────────────────────────────
+        "step_1_transition": "படி 1 முடிந்தது! பீக்கரை ஃப்ரேமில் இருந்து அகற்றுங்கள். படி 2 க்கு தயாராகுங்கள்.",
+        "step_2_transition": "படி 2 முடிந்தது! பீக்கரை ஃப்ரேமில் இருந்து அகற்றுங்கள். படி 3 க்கு தயாராகுங்கள்.",
+        "step_3_transition": "படி 3 முடிந்தது! பீக்கரை ஃப்ரேமில் இருந்து அகற்றுங்கள். கடைசி படிக்கு தயாராகுங்கள்.",
+        "step_4_transition": "சோதனை முடிந்தது! வாழ்த்துக்கள்! நீங்கள் அமில கார டைட்ரேஷனை வெற்றிகரமாக முடித்துவிட்டீர்கள்.",
     },
 }
 

@@ -29,6 +29,7 @@ const C = {
   danger: '#ef4444',
   success: '#22c55e',
   warn: '#f59e0b',
+  gold: '#f59e0b',       // transition state colour
   text: '#e2e8f0',
   dim: '#64748b',
   muted: '#334155',
@@ -79,6 +80,7 @@ export default function App() {
   const isAudioPlaying = useRef(false);
   const safetyTimeout = useRef(null);
   const scanAnim = useRef(new Animated.Value(0)).current;
+  const transitionPulse = useRef(new Animated.Value(1)).current;  // added
   const serverIPRef = useRef(serverIP);
   const wsReconnectAborted = useRef(false);
 
@@ -100,6 +102,23 @@ export default function App() {
     anim.start();
     return () => anim.stop();
   }, [screen]);
+
+  // ── Transition pulse animation ────────────────────────────────────
+  useEffect(() => {
+    const inTransition = fsmState?.step_status === 'transition';
+    if (!inTransition) {
+      transitionPulse.setValue(1);
+      return;
+    }
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(transitionPulse, { toValue: 0.55, duration: 700, useNativeDriver: true }),
+        Animated.timing(transitionPulse, { toValue: 1, duration: 700, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [fsmState?.step_status]);
 
   // ── Audio ────────────────────────────────────────────────────────
   const playAudio = useCallback(async (url, force = false) => {
@@ -200,7 +219,9 @@ export default function App() {
         if (msg.step_info) setFsmState(formatStep(msg.step_info));
         if (msg.safety_alert) showSafetyAlert(msg.safety_alert);
         if (msg.audio_url) {
-          const force = !!msg.safety_alert || !!msg.step_advance;
+          // Force audio on: safety alerts, step advances, AND transition events
+          const isTransition = msg.step_info?.step_status === 'transition';
+          const force = !!msg.safety_alert || !!msg.step_advance || isTransition;
           playAudio(`http://${serverIPRef.current}${msg.audio_url}`, force);
         }
         if (msg.experiment_complete) setExpDone(true);
@@ -491,14 +512,27 @@ export default function App() {
               </View>
               <Text style={styles.progressText}>{Math.round(progress)}% completion for this step</Text>
 
-              {fsmState.hint && (
+              {/* Transition Banner — gold pulsing overlay */}
+              {fsmState?.step_status === 'transition' && (
+                <Animated.View style={[styles.transitionBanner, { opacity: transitionPulse }]}>
+                  <Text style={styles.transitionIcon}>⏳</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.transitionTitle}>Step Complete!</Text>
+                    <Text style={styles.transitionMsg}>{fsmState.hint || 'Remove the object from the frame to continue...'}</Text>
+                  </View>
+                </Animated.View>
+              )}
+
+              {/* Normal hint — only when active */}
+              {fsmState.hint && fsmState.step_status !== 'transition' && (
                 <View style={styles.hintBox}>
                   <Text style={styles.hintIcon}>💡</Text>
                   <Text style={styles.hintText}>{fsmState.hint}</Text>
                 </View>
               )}
 
-              {fsmState.missing_objects?.length > 0 && (
+              {/* Missing pills — only when active */}
+              {fsmState?.step_status !== 'transition' && fsmState.missing_objects?.length > 0 && (
                 <View style={styles.missingBox}>
                   <Text style={styles.missingTitle}>Required Equipment missing:</Text>
                   <View style={styles.missingList}>
@@ -608,4 +642,9 @@ const styles = StyleSheet.create({
   missingList: { flexDirection: 'row', flexWrap: 'wrap' },
   missingPill: { backgroundColor: C.warn + '15', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, marginRight: 8, marginBottom: 8, borderWidth: 1, borderColor: C.warn + '30' },
   missingPillText: { color: C.warn, fontSize: 12, fontWeight: '700' },
+
+  transitionBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.gold + '18', borderWidth: 1.5, borderColor: C.gold + '60', borderRadius: 18, padding: 16, marginTop: 24 },
+  transitionIcon: { fontSize: 28, marginRight: 14 },
+  transitionTitle: { color: C.gold, fontWeight: '900', fontSize: 14, marginBottom: 4 },
+  transitionMsg: { color: '#fcd34d', fontSize: 13, lineHeight: 19 },
 });

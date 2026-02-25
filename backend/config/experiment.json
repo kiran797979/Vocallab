@@ -1,5 +1,5 @@
 {
-  "_note": "Simplified for single-object testing — only 'beaker' (plastic bottle proxy) required per step",
+  "_note": "Simplified for single-object testing — only 'beaker' (plastic bottle proxy) required per step. Includes transition state for remove-and-re-place flow.",
   "name": "Acid-Base Titration",
   "total_steps": 4,
   "steps": [
@@ -13,8 +13,13 @@
       "hint_hi": "बीकर को टेबल पर रखें",
       "hint_te": "బీకర్ను టేబుల్ మీద ఉంచండి",
       "hint_ta": "பீக்கரை மேசையில் வையுங்கள்",
+      "transition_en": "Step 1 complete! Remove the beaker. Get ready for Step 2...",
+      "transition_hi": "चरण 1 पूरा! बीकर हटाएं। चरण 2 के लिए तैयार हो जाएं...",
+      "transition_te": "స్టెప్ 1 పూర్తి! బీకర్ తీసేయండి. స్టెప్ 2 కి సిద్ధం కండి...",
+      "transition_ta": "படி 1 முடிந்தது! பீக்கரை அகற்றுங்கள். படி 2 க்கு தயாராகுங்கள்...",
       "audio_intro": "step_1_intro",
-      "audio_complete": "step_1_complete"
+      "audio_complete": "step_1_complete",
+      "audio_transition": "step_1_transition"
     },
     {
       "id": 1,
@@ -26,8 +31,13 @@
       "hint_hi": "एसिड डालने के लिए बीकर को स्थिर रखें",
       "hint_te": "ఆమ్లాన్ని పోయడానికి బీకర్ను స్థిరంగా పట్టుకోండి",
       "hint_ta": "அமிலத்தை ஊற்ற பீக்கரை நிலையாக வைக்கவும்",
+      "transition_en": "Step 2 complete! Remove the beaker. Get ready for Step 3...",
+      "transition_hi": "चरण 2 पूरा! बीकर हटाएं। चरण 3 के लिए तैयार हो जाएं...",
+      "transition_te": "స్టెప్ 2 పూర్తి! బీకర్ తీసేయండి. స్టెప్ 3 కి సిద్ధం కండి...",
+      "transition_ta": "படி 2 முடிந்தது! பீக்கரை அகற்றுங்கள். படி 3 க்கு தயாராகுங்கள்...",
       "audio_intro": "step_2_intro",
-      "audio_complete": "step_2_complete"
+      "audio_complete": "step_2_complete",
+      "audio_transition": "step_2_transition"
     },
     {
       "id": 2,
@@ -39,8 +49,13 @@
       "hint_hi": "बेस डालते समय बीकर को दिखाई दें रखें",
       "hint_te": "బేస్ జోడించేటప్పుడు బీకర్ కనిపించేలా ఉంచండి",
       "hint_ta": "காரத்தை சேர்க்கும்போது பீக்கர் தெரியும்படி வையுங்கள்",
+      "transition_en": "Step 3 complete! Remove the beaker. Get ready for the final step...",
+      "transition_hi": "चरण 3 पूरा! बीकर हटाएं। अंतिम चरण के लिए तैयार हो जाएं...",
+      "transition_te": "స్టెప్ 3 పూర్తి! బీకర్ తీసేయండి. చివరి స్టెప్ కి సిద్ధం కండి...",
+      "transition_ta": "படி 3 முடிந்தது! பீக்கரை அகற்றுங்கள். கடைசி படிக்கு தயாராகுங்கள்...",
       "audio_intro": "step_3_intro",
-      "audio_complete": "step_3_complete"
+      "audio_complete": "step_3_complete",
+      "audio_transition": "step_3_transition"
     },
     {
       "id": 3,
@@ -52,8 +67,13 @@
       "hint_hi": "बीकर का निरीक्षण करें और अपने निष्कर्ष दर्ज करें",
       "hint_te": "బీకర్ను గమనించి మీ ఫలితాలను నమోదు చేయండి",
       "hint_ta": "பீக்கரை கவனித்து உங்கள் கண்டுபிடிப்புகளை பதிவு செய்யுங்கள்",
+      "transition_en": "Experiment complete! Congratulations!",
+      "transition_hi": "प्रयोग पूरा! बधाई हो!",
+      "transition_te": "ప్రయోగం పూర్తి! అభినందనలు!",
+      "transition_ta": "சோதனை முடிந்தது! வாழ்த்துக்கள்!",
       "audio_intro": "step_4_intro",
-      "audio_complete": "step_4_complete"
+      "audio_complete": "step_4_complete",
+      "audio_transition": "step_4_transition"
     }
   ],
   "safety_rules": {

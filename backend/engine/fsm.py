@@ -1,267 +1,372 @@
 """
-VocalLab Experiment FSM — loads config/experiment.json, processes detections,
-tracks step progress, safety alerts, and step advancement.
+╔═══════════════════════════════════════════════════════════════╗
+║          VocalLab — Experiment FSM  (v2.1.0)                 ║
+║  Finite State Machine for step-by-step lab guidance          ║
+║                                                              ║
+║  TRANSITION FLOW (v2.1):                                     ║
+║    active  → (3 stable frames all required detected)         ║
+║    transition → (play transition audio, wait for REMOVAL)    ║
+║    removal detected → advance step → active (next step)      ║
+╚═══════════════════════════════════════════════════════════════╝
 """
-import json
-import math
-import time
+
 import os
-from typing import Optional, List, Dict, Any
+import json
+import time
+import threading
 
+# ── config paths ─────────────────────────────────────────────────────────
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CFG_PATH = os.path.join(_HERE, "..", "config", "experiment.json")
 
-class Detection:
-    """Single detection with class_name, confidence, bbox, and center."""
-    __slots__ = ("class_name", "confidence", "bbox", "cx", "cy")
-
-    def __init__(self, class_name: str, confidence: float, bbox: list, cx: float = 0.0, cy: float = 0.0):
-        self.class_name = class_name
-        self.confidence = confidence
-        self.bbox = bbox if bbox else [0, 0, 0, 0]
-        if bbox and len(bbox) >= 4:
-            self.cx = (bbox[0] + bbox[2]) / 2
-            self.cy = (bbox[1] + bbox[3]) / 2
-        else:
-            self.cx = cx
-            self.cy = cy
-
-
-def _detections_from_dicts(det_list: List[Dict]) -> List[Detection]:
-    """Convert detector output dicts to Detection objects."""
-    out = []
-    for d in (det_list or []):
-        label = d.get("label") or d.get("class_name", "unknown")
-        bbox = d.get("bbox", [0, 0, 0, 0])
-        center = d.get("center")
-        if isinstance(center, (list, tuple)) and len(center) >= 2:
-            cx, cy = center[0], center[1]
-        elif bbox and len(bbox) >= 4:
-            cx = (bbox[0] + bbox[2]) / 2
-            cy = (bbox[1] + bbox[3]) / 2
-        else:
-            cx, cy = 0.0, 0.0
-        out.append(Detection(
-            class_name=label,
-            confidence=float(d.get("confidence", 0)),
-            bbox=list(bbox) if bbox else [0, 0, 0, 0],
-            cx=cx, cy=cy,
-        ))
-    return out
-
-
-def _distance(a: Detection, b: Detection) -> float:
-    return math.sqrt((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2)
-
-
+# ── language key maps ─────────────────────────────────────────────────────
 _HINT_KEYS = {"en": "hint_en", "hi": "hint_hi", "te": "hint_te", "ta": "hint_ta"}
+_TRANSITION_KEYS = {"en": "transition_en", "hi": "transition_hi", "te": "transition_te", "ta": "transition_ta"}
+
+# ── stability / timing constants ──────────────────────────────────────────
+FRAMES_TO_ADVANCE  = 3   # consecutive frames ALL required objects must be present
+REMOVAL_FRAMES     = 2   # consecutive frames with NO required objects to end transition
 
 
 class ExperimentFSM:
-    """Finite state machine for chemistry experiment steps."""
+    """
+    Manages experiment state, step transitions, and safety checks.
 
-    def __init__(self, config_path: str = None):
-        if config_path is None:
-            backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            config_path = os.path.join(backend, "config", "experiment.json")
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = json.load(f)
-        self.config_path = config_path
-        self.steps = self.config["steps"]
+    Step lifecycle
+    ──────────────
+    1.  "active"     — student must bring all required_objects into frame.
+    2.  "transition" — triggered after FRAMES_TO_ADVANCE stable frames.
+                       Plays transition audio and waits for student to
+                       REMOVE all required objects from frame.
+    3.  Removal detected for REMOVAL_FRAMES frames → step advances.
+    4.  New step starts in "active" state (intro audio plays on first detect).
+    5.  Last step (id == total_steps-1) transitions directly to experiment_complete.
+    """
+
+    def __init__(self, config_path: str = _CFG_PATH):
+        self.config = self._load_config(config_path)
         self.total_steps = self.config["total_steps"]
-        self.current_step_index = 0
-        self.stable_count = 0
-        self.stable_frames_required = 3   # 3 consecutive for faster demo
-        self.step_start_time = time.time()
-        self.experiment_start_time = time.time()
-        self.completed = False
-        self.last_safety_alert_time = 0.0
-        self.step_advances = 0
-        self.safety_alerts_count = 0
-        self.intro_played_for_step = -1
+        self._lock = threading.Lock()
 
-        # Safety rules
-        self.safety_rules = self.config.get("safety_rules") or {}
-        self.proximity_threshold = self.safety_rules.get("proximity_threshold", 150)
-        self.alert_cooldown_seconds = self.safety_rules.get("alert_cooldown_seconds", 3)
-        self.dangerous_pairs = self.safety_rules.get("dangerous_pairs") or []
+        # ── timing ─────────────────────────────────────────────────────
+        self.start_time    = time.time()
+        self.step_start    = time.time()
 
-        print(f"   [FSM] Loaded: {self.config['name']} ({self.total_steps} steps, {self.stable_frames_required} frames to advance)")
+        # ── step state ─────────────────────────────────────────────────
+        self.current_step_index   = 0
+        self.stable_count         = 0   # frames with all required objects present
+        self.removal_count        = 0   # frames with no required objects (during transition)
+        self.completed            = False
 
-    def get_current_step(self) -> Optional[Dict]:
-        if self.completed or self.current_step_index >= len(self.steps):
-            return None
-        return self.steps[self.current_step_index]
+        # ── transition sub-state ───────────────────────────────────────
+        self.in_transition        = False   # True = waiting for student to remove objects
+        self.transition_sent      = False   # True = transition audio already queued
 
-    def _build_step_info(self, language: str = "en", detected_labels: set = None) -> Dict:
-        """Build step_info dict with ALL fields the mobile app needs."""
-        if self.completed or self.current_step_index >= len(self.steps):
-            return {
-                "current_step": self.total_steps,
-                "total_steps": self.total_steps,
-                "step_name": "Experiment Complete!",
-                "hint": "All steps completed successfully!",
-                "required_objects": [],
-                "detected_required": [],
-                "missing_objects": [],
-                "progress": 100.0,
-                "time_on_step": 0,
-                "elapsed_total": round(time.time() - self.experiment_start_time, 1),
-                "completed": True,
-                "step_status": "completed",
-            }
+        # ── intro audio ────────────────────────────────────────────────
+        self.intro_played_for_step = -1     # step index for which intro was already played
 
-        step = self.steps[self.current_step_index]
-        required = step.get("required_objects", [])
-        detected_labels = detected_labels or set()
-        detected_required = [obj for obj in required if obj in detected_labels]
-        missing_objects = [obj for obj in required if obj not in detected_labels]
+        # ── safety ─────────────────────────────────────────────────────
+        srules = self.config.get("safety_rules", {})
+        self.proximity_threshold  = srules.get("proximity_threshold", 150)
+        self.alert_cooldown       = srules.get("alert_cooldown_seconds", 3)
+        self.dangerous_pairs      = srules.get("dangerous_pairs", [])
+        self._last_alert_time     = 0
 
-        # Within-step progress
-        progress = round((len(detected_required) / len(required)) * 100, 1) if required else 100.0
+        print(f"   [FSM] Loaded: {self.config['name']} ({self.total_steps} steps, "
+              f"{FRAMES_TO_ADVANCE} frames to advance)")
 
-        # Hint based on language
-        hint_key = _HINT_KEYS.get(language, "hint_en")
-        hint = step.get(hint_key, step.get("hint_en", ""))
+    # ─────────────────────────────────────────────────────────────────────
+    # PUBLIC API
+    # ─────────────────────────────────────────────────────────────────────
 
-        return {
-            "current_step": self.current_step_index,
-            "total_steps": self.total_steps,
-            "step_name": step["name"],
-            "hint": hint,
-            "required_objects": list(required),
-            "detected_required": detected_required,
-            "missing_objects": missing_objects,
-            "progress": progress,
-            "time_on_step": round(time.time() - self.step_start_time, 1),
-            "elapsed_total": round(time.time() - self.experiment_start_time, 1),
-            "completed": False,
-            "step_status": "active",
+    def process_detections(self, detections: list, language: str = "en") -> dict:
+        """
+        Core processing method called for every camera frame.
+
+        Returns
+        ───────
+        {
+          "step_info":          dict  — full step snapshot,
+          "safety_alert":       dict | None,
+          "step_advance":       bool,
+          "audio_to_play":      str | None  — audio file key (no extension, no lang),
+          "experiment_complete": bool,
         }
+        """
+        with self._lock:
+            lang = language if language in _HINT_KEYS else "en"
 
-    def _check_safety(self, detections: List[Detection]) -> Optional[Dict]:
-        now = time.time()
-        if now - self.last_safety_alert_time < self.alert_cooldown_seconds:
-            return None
-        det_by_label = {}
-        for d in detections:
-            det_by_label[d.class_name] = d
-        for pair in self.dangerous_pairs:
-            a, b = pair[0], pair[1]
-            obj_a = det_by_label.get(a)
-            obj_b = det_by_label.get(b)
-            if not obj_a or not obj_b:
-                continue
-            dist = _distance(obj_a, obj_b)
-            if dist < self.proximity_threshold:
-                self.last_safety_alert_time = now
-                self.safety_alerts_count += 1
-                print(f"   [FSM] ⚠️ SAFETY: {a} too close to {b} ({dist:.0f}px < {self.proximity_threshold}px)")
-                return {
-                    "severity": "high",
-                    "message": f"Keep hands away from {b}!",
-                    "pair": [a, b],
-                    "distance_px": round(dist, 1),
-                    "threshold_px": self.proximity_threshold,
-                }
-        return None
+            # ── 1. Safety check FIRST — always ──────────────────────────
+            safety_alert = self._check_safety(detections)
 
-    def process_detections(self, detections: List[Dict], language: str = "en") -> Dict[str, Any]:
-        """Process detection dicts from detector. Returns full result dict."""
-        detected_labels = set()
-        for d in (detections or []):
-            label = d.get("label") or d.get("class_name", "")
-            if label:
-                detected_labels.add(label)
+            # ── 2. Already completed ─────────────────────────────────────
+            if self.completed:
+                return self._result(
+                    step_info=self._build_step_info(lang),
+                    safety_alert=safety_alert,
+                    step_advance=False,
+                    audio_to_play=None,
+                    experiment_complete=True,
+                )
 
-        result = {
-            "step_info": self._build_step_info(language, detected_labels),
-            "safety_alert": None,
-            "step_advance": False,
-            "audio_to_play": None,
-            "experiment_complete": False,
-        }
+            step_cfg = self.config["steps"][self.current_step_index]
+            required = set(step_cfg.get("required_objects", []))
+            detected_labels = {d["label"] for d in detections if "label" in d}
+            detected_required = required & detected_labels
+            all_present = detected_required == required
 
-        if self.completed:
-            result["experiment_complete"] = True
-            result["step_info"] = self._build_step_info(language, detected_labels)
-            return result
+            # ── 3. TRANSITION state — waiting for removal ────────────────
+            if self.in_transition:
+                audio_to_play = None
 
-        dets = _detections_from_dicts(detections)
+                # Send transition audio exactly once
+                if not self.transition_sent:
+                    audio_to_play = step_cfg.get("audio_transition")
+                    self.transition_sent = True
 
-        # 1) Safety check
-        safety = self._check_safety(dets)
-        if safety:
-            result["safety_alert"] = safety
-            result["audio_to_play"] = "error_hand_proximity"
-            return result
+                # Check for removal of ALL required objects
+                if all_present:
+                    # Objects still visible — keep waiting
+                    self.removal_count = 0
+                    return self._result(
+                        step_info=self._build_step_info(lang, force_transition=True),
+                        safety_alert=safety_alert,
+                        step_advance=False,
+                        audio_to_play=audio_to_play,
+                        experiment_complete=False,
+                    )
+                else:
+                    # Objects gone (at least partially) — count removal frames
+                    self.removal_count += 1
+                    if self.removal_count >= REMOVAL_FRAMES:
+                        # ── Advance step ─────────────────────────────────
+                        return self._do_advance(lang, safety_alert)
+                    else:
+                        return self._result(
+                            step_info=self._build_step_info(lang, force_transition=True),
+                            safety_alert=safety_alert,
+                            step_advance=False,
+                            audio_to_play=audio_to_play,
+                            experiment_complete=False,
+                        )
 
-        # 2) Step completion check
-        step = self.get_current_step()
-        if step is None:
-            self.completed = True
-            result["experiment_complete"] = True
-            result["step_info"] = self._build_step_info(language, detected_labels)
-            return result
+            # ── 4. ACTIVE state — normal detection ───────────────────────
+            audio_to_play = None
 
-        required = set(step.get("required_objects") or [])
-        det_label_set = {d.class_name for d in dets}
+            if all_present and required:
+                self.stable_count += 1
+            else:
+                self.stable_count = 0
 
-        if not required.issubset(det_label_set):
-            self.stable_count = 0
-            # Auto-trigger intro if not yet played for this step
-            if self.current_step_index != self.intro_played_for_step:
-                if step and step.get("audio_intro"):
-                    result["audio_to_play"] = step["audio_intro"]
-                    self.intro_played_for_step = self.current_step_index
-            return result
+            # Intro audio on first detection after step starts
+            if detected_required and self.intro_played_for_step != self.current_step_index:
+                self.intro_played_for_step = self.current_step_index
+                audio_to_play = step_cfg.get("audio_intro")
 
-        self.stable_count += 1
-        print(f"   [FSM] Step {self.current_step_index} stable {self.stable_count}/{self.stable_frames_required}")
+            # Enter transition after enough stable frames
+            if self.stable_count >= FRAMES_TO_ADVANCE:
+                self.stable_count   = 0
+                self.removal_count  = 0
+                self.in_transition  = True
+                self.transition_sent = False
 
-        if self.stable_count < self.stable_frames_required:
-            return result
+                # Last step → experiment complete immediately
+                if self.current_step_index >= self.total_steps - 1:
+                    self.completed = True
+                    self.in_transition = False
+                    return self._result(
+                        step_info=self._build_step_info(lang, force_complete=True),
+                        safety_alert=safety_alert,
+                        step_advance=True,
+                        audio_to_play=step_cfg.get("audio_transition"),
+                        experiment_complete=True,
+                    )
 
-        # STEP ADVANCE
-        self.stable_count = 0
-        completed_step = step
-        self.current_step_index += 1
-        self.step_start_time = time.time()
-        self.step_advances += 1
+                # Non-final step → enter transition state, send transition audio
+                return self._result(
+                    step_info=self._build_step_info(lang, force_transition=True),
+                    safety_alert=safety_alert,
+                    step_advance=False,
+                    audio_to_play=step_cfg.get("audio_transition"),
+                    experiment_complete=False,
+                )
 
-        result["step_advance"] = True
-        result["audio_to_play"] = completed_step.get("audio_complete")
+            return self._result(
+                step_info=self._build_step_info(lang),
+                safety_alert=safety_alert,
+                step_advance=False,
+                audio_to_play=audio_to_play,
+                experiment_complete=False,
+            )
 
-        print(f"   [FSM] ✅ Step '{completed_step['name']}' COMPLETE → step {self.current_step_index}")
-
-        if self.current_step_index >= len(self.steps):
-            self.completed = True
-            result["experiment_complete"] = True
-            print("   [FSM] 🎉 EXPERIMENT COMPLETE!")
-        else:
-            next_step = self.steps[self.current_step_index]
-            print(f"   [FSM] Next: '{next_step['name']}' needs {next_step.get('required_objects', [])}")
-
-        result["step_info"] = self._build_step_info(language, set())
-        return result
-
-    def get_full_state(self, language: str = "en") -> Dict:
+    def get_full_state(self) -> dict:
+        """Return serialisable full state snapshot."""
         return {
-            "experiment_name": self.config["name"],
-            "total_steps": self.total_steps,
-            "current_step": self.current_step_index,
-            "step_info": self._build_step_info(language),
-            "completed": self.completed,
+            "experiment_name":  self.config["name"],
+            "total_steps":      self.total_steps,
+            "current_step":     self.current_step_index,
+            "completed":        self.completed,
+            "in_transition":    self.in_transition,
+            "elapsed_total":    round(time.time() - self.start_time, 1),
+            "step_info":        self._build_step_info("en"),
         }
 
     def reset(self):
-        print("   [FSM] Resetting to step 0")
-        self.__init__(config_path=self.config_path)
+        """Reset the FSM to the beginning of the experiment."""
+        with self._lock:
+            self.current_step_index   = 0
+            self.stable_count         = 0
+            self.removal_count        = 0
+            self.completed            = False
+            self.in_transition        = False
+            self.transition_sent      = False
+            self.intro_played_for_step = -1
+            self._last_alert_time     = 0
+            self.start_time           = time.time()
+            self.step_start           = time.time()
+        print("   [FSM] Reset complete")
 
-    def get_stats(self) -> dict:
+    # ─────────────────────────────────────────────────────────────────────
+    # PRIVATE HELPERS
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _do_advance(self, lang: str, safety_alert) -> dict:
+        """Actually advance to the next step (called after removal detected)."""
+        self.current_step_index   += 1
+        self.stable_count          = 0
+        self.removal_count         = 0
+        self.in_transition         = False
+        self.transition_sent       = False
+        self.intro_played_for_step = -1  # reset so intro plays fresh
+        self.step_start            = time.time()
+
+        new_step_cfg = self.config["steps"][self.current_step_index]
+        intro_audio  = new_step_cfg.get("audio_intro")
+        # Mark intro as played so it doesn't double-play on next frame
+        self.intro_played_for_step = self.current_step_index
+
+        return self._result(
+            step_info=self._build_step_info(lang),
+            safety_alert=safety_alert,
+            step_advance=True,
+            audio_to_play=intro_audio,
+            experiment_complete=False,
+        )
+
+    def _build_step_info(self, lang: str,
+                         force_transition: bool = False,
+                         force_complete: bool = False) -> dict:
+        """Build step_info dict for the current step."""
+        idx      = self.current_step_index
+        step_cfg = self.config["steps"][idx]
+        required = step_cfg.get("required_objects", [])
+        now      = time.time()
+
+        # During transition or explicit complete: progress = 100, missing = []
+        if force_transition or force_complete or self.in_transition:
+            detected_req = list(required)
+            missing      = []
+            progress     = 100.0
+            step_status  = "transition" if not force_complete else "completed"
+            hint_key     = _TRANSITION_KEYS.get(lang, "transition_en")
+        else:
+            # Will be filled by caller context — we provide defaults here
+            detected_req = []
+            missing      = list(required)
+            progress     = 0.0
+            step_status  = "active"
+            hint_key     = _HINT_KEYS.get(lang, "hint_en")
+
+        hint = step_cfg.get(hint_key) or step_cfg.get(_HINT_KEYS.get(lang, "hint_en"), "")
+
         return {
-            "current_step": self.current_step_index,
-            "total_steps": self.total_steps,
-            "completed": self.completed,
-            "step_advances": self.step_advances,
-            "safety_alerts": self.safety_alerts_count,
-            "elapsed_total": round(time.time() - self.experiment_start_time, 1),
+            "current_step":      idx,
+            "total_steps":       self.total_steps,
+            "step_name":         step_cfg["name"],
+            "hint":              hint,
+            "required_objects":  required,
+            "detected_required": detected_req,
+            "missing_objects":   missing,
+            "progress":          progress,
+            "time_on_step":      round(now - self.step_start, 1),
+            "elapsed_total":     round(now - self.start_time, 1),
+            "completed":         self.completed,
+            "step_status":       step_status,
         }
+
+    def _build_step_info_with_detections(self, lang: str, detected_labels: set) -> dict:
+        """Build step_info with real detection data (used in active state)."""
+        idx      = self.current_step_index
+        step_cfg = self.config["steps"][idx]
+        required = step_cfg.get("required_objects", [])
+        now      = time.time()
+
+        detected_req = [o for o in required if o in detected_labels]
+        missing      = [o for o in required if o not in detected_labels]
+        n_req        = len(required)
+        progress     = (len(detected_req) / n_req * 100.0) if n_req else 0.0
+        hint_key     = _HINT_KEYS.get(lang, "hint_en")
+        hint         = step_cfg.get(hint_key, "")
+
+        return {
+            "current_step":      idx,
+            "total_steps":       self.total_steps,
+            "step_name":         step_cfg["name"],
+            "hint":              hint,
+            "required_objects":  required,
+            "detected_required": detected_req,
+            "missing_objects":   missing,
+            "progress":          round(progress, 1),
+            "time_on_step":      round(now - self.step_start, 1),
+            "elapsed_total":     round(now - self.start_time, 1),
+            "completed":         self.completed,
+            "step_status":       "active",
+        }
+
+    def _check_safety(self, detections: list) -> dict | None:
+        """Return a safety alert dict if a dangerous pair is too close, else None."""
+        now = time.time()
+        if now - self._last_alert_time < self.alert_cooldown:
+            return None
+
+        centers = {}
+        for d in detections:
+            label  = d.get("label", "")
+            center = d.get("center", [0, 0])
+            if label:
+                centers[label] = center
+
+        for pair in self.dangerous_pairs:
+            if len(pair) < 2:
+                continue
+            a, b = pair[0], pair[1]
+            if a in centers and b in centers:
+                cx1, cy1 = centers[a]
+                cx2, cy2 = centers[b]
+                dist = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
+                if dist < self.proximity_threshold:
+                    self._last_alert_time = now
+                    return {
+                        "type":    "proximity",
+                        "message": f"Warning! Keep {a} and {b} apart!",
+                        "objects": [a, b],
+                        "distance": round(dist, 1),
+                    }
+        return None
+
+    def _result(self, step_info, safety_alert, step_advance, audio_to_play, experiment_complete) -> dict:
+        return {
+            "step_info":           step_info,
+            "safety_alert":        safety_alert,
+            "step_advance":        step_advance,
+            "audio_to_play":       audio_to_play,
+            "experiment_complete": experiment_complete,
+        }
+
+    @staticmethod
+    def _load_config(path: str) -> dict:
+        abs_path = os.path.abspath(path)
+        if not os.path.isfile(abs_path):
+            raise FileNotFoundError(f"[FSM] experiment.json not found: {abs_path}")
+        with open(abs_path, encoding="utf-8") as f:
+            return json.load(f)
