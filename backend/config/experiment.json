@@ -1,48 +1,57 @@
 {
+  "_note": "Simplified for single-object testing — only 'beaker' (plastic bottle proxy) required per step",
   "name": "Acid-Base Titration",
   "total_steps": 4,
   "steps": [
     {
       "id": 0,
       "name": "Setup Equipment",
-      "required_objects": ["beaker", "conical_flask"],
-      "hint_en": "Place the beaker and conical flask on the table",
-      "hint_hi": "बीकर और कोनिकल फ्लास्क टेबल पर रखें",
-      "hint_te": "బీకర్ మరియు కోనికల్ ఫ్లాస్క్ టేబుల్ మీద ఉంచండి",
-      "hint_ta": "பீக்கர் மற்றும் கூம்பு குடுவையை மேசையில் வையுங்கள்",
+      "required_objects": [
+        "beaker"
+      ],
+      "hint_en": "Place the beaker on the table",
+      "hint_hi": "बीकर को टेबल पर रखें",
+      "hint_te": "బీకర్ను టేబుల్ మీద ఉంచండి",
+      "hint_ta": "பீக்கரை மேசையில் வையுங்கள்",
       "audio_intro": "step_1_intro",
       "audio_complete": "step_1_complete"
     },
     {
       "id": 1,
       "name": "Pour Acid (HCl)",
-      "required_objects": ["beaker", "measuring_cylinder"],
-      "hint_en": "Measure and pour HCl into the beaker",
-      "hint_hi": "HCl को मापकर बीकर में डालें",
-      "hint_te": "HCl ని కొలిచి బీకర్‌లో పోయండి",
-      "hint_ta": "HCl ஐ அளந்து பீக்கரில் ஊற்றுங்கள்",
+      "required_objects": [
+        "beaker"
+      ],
+      "hint_en": "Hold the beaker steady to pour acid",
+      "hint_hi": "एसिड डालने के लिए बीकर को स्थिर रखें",
+      "hint_te": "ఆమ్లాన్ని పోయడానికి బీకర్ను స్థిరంగా పట్టుకోండి",
+      "hint_ta": "அமிலத்தை ஊற்ற பீக்கரை நிலையாக வைக்கவும்",
       "audio_intro": "step_2_intro",
       "audio_complete": "step_2_complete"
     },
     {
       "id": 2,
       "name": "Add Base & Indicator",
-      "required_objects": ["conical_flask", "dropper"],
-      "hint_en": "Add NaOH and phenolphthalein indicator to the flask",
-      "hint_hi": "फ्लास्क में NaOH और फिनोल्फ्थेलिन सूचक डालें",
-      "hint_te": "ఫ్లాస్క్‌లో NaOH మరియు ఫినాల్ఫ్తలీన్ సూచిక వేయండి",
-      "hint_ta": "குடுவையில் NaOH மற்றும் குறிகாட்டி சேருங்கள்",
+      "required_objects": [
+        "beaker"
+      ],
+      "hint_en": "Keep the beaker visible while adding base",
+      "hint_hi": "बेस डालते समय बीकर को दिखाई दें रखें",
+      "hint_te": "బేస్ జోడించేటప్పుడు బీకర్ కనిపించేలా ఉంచండి",
+      "hint_ta": "காரத்தை சேர்க்கும்போது பீக்கர் தெரியும்படி வையுங்கள்",
       "audio_intro": "step_3_intro",
       "audio_complete": "step_3_complete"
     },
     {
       "id": 3,
       "name": "Record Observations",
-      "required_objects": ["beaker", "conical_flask", "lab_manual"],
-      "hint_en": "Observe the color change and record the burette reading",
-      "hint_hi": "रंग परिवर्तन देखें और बुरेट रीडिंग नोट करें",
-      "hint_te": "రంగు మార్పు గమనించి బ్యూరెట్ రీడింగ్ నోట్ చేయండి",
-      "hint_ta": "நிற மாற்றத்தை கவனித்து பியூரெட் அளவீட்டை பதிவு செய்யுங்கள்",
+      "required_objects": [
+        "beaker"
+      ],
+      "hint_en": "Observe the beaker and record your findings",
+      "hint_hi": "बीकर का निरीक्षण करें और अपने निष्कर्ष दर्ज करें",
+      "hint_te": "బీకర్ను గమనించి మీ ఫలితాలను నమోదు చేయండి",
+      "hint_ta": "பீக்கரை கவனித்து உங்கள் கண்டுபிடிப்புகளை பதிவு செய்யுங்கள்",
       "audio_intro": "step_4_intro",
       "audio_complete": "step_4_complete"
     }
@@ -51,9 +60,10 @@
     "proximity_threshold": 150,
     "alert_cooldown_seconds": 3,
     "dangerous_pairs": [
-      ["hand", "beaker"],
-      ["hand", "conical_flask"],
-      ["hand", "measuring_cylinder"]
+      [
+        "hand",
+        "beaker"
+      ]
     ]
   }
 }
