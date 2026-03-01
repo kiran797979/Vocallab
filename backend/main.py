@@ -1,13 +1,14 @@
 """
 ╔═══════════════════════════════════════════════════════════════╗
-║   VocalLab — AI Chemistry Lab Instructor   (Backend v2.0)    ║
+║   VocalLab — AI Chemistry Lab Instructor   (Backend v2.1)    ║
 ║   FastAPI + YOLOv8 + WebSocket + Multi-language              ║
+║   Enhanced for Proxy Mode + Stability + Demo Mode            ║
 ╚═══════════════════════════════════════════════════════════════╝
 
 PyTorch 2.6 weights_only patch applied at top.
 """
 
-# ── PyTorch 2.6 safety patch — MUST be before any ultralytics / torch import ──
+# ── PyTorch 2.6 safety patch — MUST be before any ultralytics / torch import ───
 import torch as _torch
 _original_load = _torch.load
 def _patched_load(*a, **kw):
@@ -25,7 +26,7 @@ import logging
 import traceback
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Dict, Tuple, Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
@@ -40,11 +41,29 @@ if _BACKEND_DIR not in sys.path:
 
 from engine.detector import ObjectDetector
 from engine.fsm import ExperimentFSM
+from config.label_map import PROXY_MODE, map_label, get_fallback_mapping
+
+# ═══════════════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════
+VERSION = "2.1.0"
+DEMO_MODE = True  # Enable demo mode for testing without real equipment
+
+# Detection settings
+DETECTION_CONFIDENCE = 0.35
+DETECTION_IMGSZ = 640
+MAX_FPS = 2  # Maximum processing frames per second
+
+# Safety settings
+SAFETY_COOLDOWN_SECONDS = 3
+SAFETY_PROXIMITY_THRESHOLD = 150  # pixels
+
+# Demo mode settings
+DEMO_SIMULATION_DELAY = 3  # seconds to simulate detection if objects not found (reduced for faster testing)
 
 # ═══════════════════════════════════════════════════════════════════════
 # GLOBALS
 # ═══════════════════════════════════════════════════════════════════════
-VERSION = "2.0.0"
 detector: ObjectDetector = None
 fsm: ExperimentFSM = None
 
@@ -54,6 +73,7 @@ server_stats = {
     "total_detections": 0,
     "step_advances": 0,
     "safety_alerts": 0,
+    "demo_simulations": 0,
 }
 
 
@@ -62,36 +82,62 @@ server_stats = {
 # ═══════════════════════════════════════════════════════════════════════
 class ConnectionManager:
     def __init__(self):
-        self.student_connections: List[WebSocket] = []
+        self.student_connections: Dict[str, WebSocket] = {}  # student_id -> WebSocket
         self.dashboard_connections: List[WebSocket] = []
+        self.student_fsms: Dict[str, ExperimentFSM] = {}    # student_id -> live FSM instance
+        self.student_stats: Dict[str, Dict] = {}             # student_id -> metrics counters
 
-    async def connect_student(self, ws: WebSocket):
+    async def connect_student(self, ws: WebSocket, student_id: str = None):
+        if not student_id:
+            student_id = f"STU-{int(time.time() * 1000)}-{len(self.student_connections)}"
         await ws.accept()
-        self.student_connections.append(ws)
-        print(f"   [CM] Student connected (total: {len(self.student_connections)})")
+        self.student_connections[student_id] = ws
+        # Create isolated FSM instance for this student
+        if student_id not in self.student_fsms:
+            try:
+                self.student_fsms[student_id] = ExperimentFSM(demo_mode=DEMO_MODE, demo_timeout=DEMO_SIMULATION_DELAY)
+            except Exception as e:
+                print(f"   [CM] FSM creation failed for {student_id}: {e}")
+                self.student_fsms[student_id] = None
+        # Initialize per-student metrics
+        if student_id not in self.student_stats:
+            self.student_stats[student_id] = {
+                "frames_processed": 0,
+                "detections_count": 0,
+                "safety_alerts_count": 0,
+                "steps_completed": 0,
+                "connected_at": time.time(),
+            }
+        print(f"   [CM] Student connected: {student_id} (total: {len(self.student_connections)})")
+        return student_id
 
     async def connect_dashboard(self, ws: WebSocket):
         await ws.accept()
         self.dashboard_connections.append(ws)
         print(f"   [CM] Dashboard connected (total: {len(self.dashboard_connections)})")
 
-    def disconnect_student(self, ws: WebSocket):
-        if ws in self.student_connections:
-            self.student_connections.remove(ws)
-        print(f"   [CM] Student disconnected (total: {len(self.student_connections)})")
+    def disconnect_student(self, student_id: str):
+        if student_id in self.student_connections:
+            self.student_connections.pop(student_id)
+        if student_id in self.student_fsms:
+            self.student_fsms.pop(student_id)
+        self.student_stats.pop(student_id, None)
+        print(f"   [CM] Student disconnected: {student_id} (total: {len(self.student_connections)})")
 
     def disconnect_dashboard(self, ws: WebSocket):
         if ws in self.dashboard_connections:
             self.dashboard_connections.remove(ws)
         print(f"   [CM] Dashboard disconnected (total: {len(self.dashboard_connections)})")
 
-    async def broadcast_to_dashboards(self, message: dict):
+    async def broadcast_to_dashboards(self, message: dict, exclude_ws: WebSocket = None):
         """Send JSON to all dashboard clients. Remove dead connections."""
         if not self.dashboard_connections:
             return
         text = json.dumps(message)
         dead = []
         for ws in self.dashboard_connections:
+            if ws == exclude_ws:
+                continue
             try:
                 await ws.send_text(text)
             except Exception:
@@ -99,18 +145,54 @@ class ConnectionManager:
         for ws in dead:
             self.disconnect_dashboard(ws)
 
+    async def send_to_student(self, student_id: str, message: dict):
+        """Send message to specific student."""
+        if student_id in self.student_connections:
+            ws = self.student_connections[student_id]
+            try:
+                await ws.send_text(json.dumps(message))
+                return True
+            except Exception as e:
+                print(f"   [CM] Error sending to {student_id}: {e}")
+                self.disconnect_student(student_id)
+        return False
+
     async def broadcast_to_students(self, message: dict):
+        """Send JSON to all student clients. Remove dead connections."""
         if not self.student_connections:
             return
         text = json.dumps(message)
         dead = []
-        for ws in self.student_connections:
+        for student_id, ws in list(self.student_connections.items()):
             try:
                 await ws.send_text(text)
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.disconnect_student(ws)
+                dead.append(student_id)
+        for student_id in dead:
+            self.disconnect_student(student_id)
+
+
+    def get_student_snapshot(self, student_id: str) -> dict:
+        """Build a full per-student metrics snapshot (counters + FSM-derived fields)."""
+        stats = self.student_stats.get(student_id, {})
+        sfsm = self.student_fsms.get(student_id)
+        now = time.time()
+        return {
+            "student_id": student_id,
+            "frames_processed": stats.get("frames_processed", 0),
+            "detections_count": stats.get("detections_count", 0),
+            "safety_alerts_count": stats.get("safety_alerts_count", 0),
+            "steps_completed": stats.get("steps_completed", 0),
+            "current_step": sfsm.current_step_index if sfsm else 0,
+            "total_steps": sfsm.total_steps if sfsm else 0,
+            "experiment_complete": sfsm.completed if sfsm else False,
+            "time_on_current_step": round(now - sfsm.step_start, 1) if sfsm else 0.0,
+            "session_duration": round(now - stats.get("connected_at", now), 1),
+        }
+
+    def get_all_student_snapshots(self) -> list:
+        """Return metrics for every connected student."""
+        return [self.get_student_snapshot(sid) for sid in self.student_connections]
 
 
 manager = ConnectionManager()
@@ -129,6 +211,7 @@ def print_banner():
 ║                                                               ║
 ║   {bold}{green}🧪 VocalLab{reset}{teal}  — AI Chemistry Lab Instructor              ║
 ║      Version {VERSION}  •  FastAPI + YOLOv8 + WebSocket       ║
+║      Enhanced for Proxy Mode + Stability + Demo Mode          ║
 ║      Powered by AMD Ryzen™ AI                                 ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝{reset}
@@ -163,17 +246,17 @@ async def lifespan(app: FastAPI):
     # Load detector
     print("   [Main] Loading AI engine...")
     try:
-        detector = ObjectDetector()
+        detector = ObjectDetector(model_path="yolov8n.pt", confidence=DETECTION_CONFIDENCE)
         print("   [Main] Detector OK ✓")
     except Exception as e:
         print(f"   [Main] Detector FAILED: {e}")
         traceback.print_exc()
         detector = None
 
-    # Load FSM
+    # Load FSM (for reference, each student gets isolated FSM)
     try:
-        fsm = ExperimentFSM()
-        print("   [Main] FSM OK ✓")
+        fsm = ExperimentFSM(demo_mode=DEMO_MODE, demo_timeout=DEMO_SIMULATION_DELAY)
+        print(f"   [Main] FSM OK ✓ (demo_mode={DEMO_MODE})")
     except Exception as e:
         print(f"   [Main] FSM FAILED: {e}")
         traceback.print_exc()
@@ -274,6 +357,8 @@ async def root():
         "model_loaded": detector is not None and detector.model is not None,
         "fsm_loaded": fsm is not None,
         "uptime": round(time.time() - server_stats["start_time"], 1),
+        "demo_mode": DEMO_MODE,
+        "proxy_mode": PROXY_MODE,
     }
 
 
@@ -286,6 +371,7 @@ async def health():
         "fsm_state": fsm.get_full_state() if fsm else None,
         "dashboard_clients": len(manager.dashboard_connections),
         "student_clients": len(manager.student_connections),
+        "server_stats": server_stats,
     }
 
 
@@ -300,7 +386,7 @@ async def experiment_info():
 async def experiment_steps():
     if not fsm:
         raise HTTPException(500, "FSM not loaded")
-    return {"steps": fsm.steps, "total": fsm.total_steps}
+    return {"steps": fsm.config["steps"], "total": fsm.total_steps}
 
 
 @app.post("/detect")
@@ -316,27 +402,46 @@ async def detect_image(body: dict):
 
 @app.post("/reset")
 async def reset_experiment():
-    if not fsm:
-        raise HTTPException(500, "FSM not loaded")
-    fsm.reset()
+    # Reset global reference FSM
+    if fsm:
+        fsm.reset()
+    # Reset all per-student FSM instances
+    for sid, student_fsm in list(manager.student_fsms.items()):
+        if student_fsm:
+            try:
+                student_fsm.reset()
+            except Exception as e:
+                print(f"   [Main] Reset failed for {sid}: {e}")
     server_stats["step_advances"] = 0
     server_stats["safety_alerts"] = 0
-    await manager.broadcast_to_dashboards({
-        "type": "experiment_reset",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        **fsm.get_full_state(),
-    })
-    await manager.broadcast_to_students({
-        "type": "welcome",
-        "server_version": VERSION,
-        "experiment_name": fsm.config["name"],
-        "total_steps": fsm.total_steps,
-        "current_step": fsm.current_step_index,
-        "step_info": fsm._build_step_info("en"),
-        "model_loaded": detector is not None and detector.model is not None,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
-    return {"status": "reset", "state": fsm.get_full_state()}
+    num_students = len(manager.student_connections)
+    print(f"   [Main] Experiment reset (students={num_students}, dashboards={len(manager.dashboard_connections)})")
+    # Build a reference state from global FSM for dashboard/broadcast
+    ref_fsm = fsm or (next(iter(manager.student_fsms.values()), None))
+    try:
+        state = ref_fsm.get_full_state() if ref_fsm else {}
+        await manager.broadcast_to_dashboards({
+            "type": "experiment_reset",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **state,
+        })
+    except Exception as e:
+        print(f"   [Main] Reset broadcast to dashboards failed: {e}")
+    try:
+        welcome = {
+            "type": "welcome",
+            "server_version": VERSION,
+            "experiment_name": ref_fsm.config["name"] if ref_fsm else "Unknown",
+            "total_steps": ref_fsm.total_steps if ref_fsm else 0,
+            "current_step": 0,
+            "step_info": ref_fsm._build_step_info("en") if ref_fsm else {},
+            "model_loaded": detector is not None and detector.model is not None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        await manager.broadcast_to_students(welcome)
+    except Exception as e:
+        print(f"   [Main] Reset broadcast to students failed: {e}")
+    return {"status": "reset", "students_reset": num_students, "state": ref_fsm.get_full_state() if ref_fsm else {}}
 
 
 @app.get("/stats")
@@ -348,6 +453,7 @@ async def server_statistics():
         "dashboards_connected": len(manager.dashboard_connections),
         "detector": detector.get_stats() if detector else None,
         "fsm": fsm.get_stats() if fsm else None,
+        "students": manager.get_all_student_snapshots(),
     }
 
 
@@ -356,172 +462,199 @@ async def server_statistics():
 # ═══════════════════════════════════════════════════════════════════════
 @app.websocket("/ws/student")
 async def ws_student(websocket: WebSocket):
-    await manager.connect_student(websocket)
+    student_id = None
     language = "en"
     last_frame_time = 0.0
-    min_frame_interval = 0.5   # max 2 fps
-    student_stats = {"frames": 0, "detections": 0, "alerts": 0}
+    min_frame_interval = 1.0 / MAX_FPS  # based on MAX_FPS
 
     try:
-        # ── Send welcome with COMPLETE experiment info ───
-        step_names = [s["name"] for s in fsm.steps] if fsm else []
+        # Connect student and get isolated FSM instance
+        student_id = await manager.connect_student(websocket)
+        student_fsm = manager.student_fsms.get(student_id)
+        student_stats = manager.student_stats.get(student_id, {})
+
+        # Send welcome with student-specific state
+        step_names = [s["name"] for s in student_fsm.config["steps"]] if student_fsm else []
         welcome = {
             "type": "welcome",
             "server_version": VERSION,
-            "experiment_name": fsm.config["name"] if fsm else "Unknown",
-            "total_steps": fsm.total_steps if fsm else 0,
-            "current_step": fsm.current_step_index if fsm else 0,
+            "experiment_name": student_fsm.config["name"] if student_fsm else "Unknown",
+            "total_steps": student_fsm.total_steps if student_fsm else 0,
+            "current_step": student_fsm.current_step_index if student_fsm else 0,
             "step_names": step_names,
-            "step_info": fsm._build_step_info(language) if fsm else None,
+            "step_info": student_fsm._build_step_info("en") if student_fsm else None,
             "model_loaded": detector is not None and detector.model is not None,
+            "demo_mode": DEMO_MODE,
+            "proxy_mode": PROXY_MODE,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         await websocket.send_text(json.dumps(welcome))
-        print(f"   [Main] Sent welcome (exp={welcome['experiment_name']}, steps={welcome['total_steps']})")
+        print(f"   [Main] Sent welcome to {student_id} (exp={welcome['experiment_name']}, steps={welcome['total_steps']})")
 
         # Notify dashboards
         await manager.broadcast_to_dashboards({
             "type": "student_connected",
+            "student_id": student_id,
             "student_count": len(manager.student_connections),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
         while True:
-            raw = await websocket.receive_text()
+            try:
+                raw = await websocket.receive_text()
+            except Exception:
+                break  # connection lost — exit loop cleanly
             try:
                 msg = json.loads(raw)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(msg, dict):
                 continue
             msg_type = msg.get("type", "")
 
-            # ── LANGUAGE CHANGE ─────────────────────────
-            if msg_type == "language_change":
-                language = msg.get("language", "en")
-                print(f"   [Main] Language changed to: {language}")
-                
-                audio_url = None
-                if fsm:
-                    # Reset intro tracker so it can play in the new language
-                    fsm.intro_played_for_step = -1 
-                    
-                    info = fsm._build_step_info(language)
-                    step = fsm.get_current_step()
-                    if step and step.get("audio_intro"):
-                        audio_url = f"/audio/{language}/{step['audio_intro']}.mp3"
-                    
-                    await websocket.send_text(json.dumps({
-                        "type": "language_updated",
-                        "language": language,
-                        "step_info": info,
-                        "audio_url": audio_url
-                    }))
-                continue
+            try:
+                # ── LANGUAGE CHANGE ─────────────────────────
+                if msg_type == "language_change":
+                    language = msg.get("language", "en")
+                    if not isinstance(language, str) or language not in ("en", "hi", "te", "ta"):
+                        language = "en"
+                    print(f"   [WS] Lang → {language} for {student_id}")
 
-            # ── PING ────────────────────────────────────
-            if msg_type == "ping":
-                await websocket.send_text(json.dumps({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}))
-                continue
+                    audio_url = None
+                    if student_fsm:
+                        student_fsm.intro_played_for_step = -1
+                        info = student_fsm._build_step_info(language)
+                        step = student_fsm.get_current_step()
+                        if step and step.get("audio_intro"):
+                            audio_url = f"/audio/{language}/{step['audio_intro']}.mp3"
 
-            # ── FRAME ───────────────────────────────────
-            if msg_type == "frame":
-                # Rate limit
-                now = time.time()
-                if now - last_frame_time < min_frame_interval:
-                    continue
-                last_frame_time = now
-
-                base64_data = msg.get("data", "")
-                if not base64_data:
+                        await websocket.send_text(json.dumps({
+                            "type": "language_updated",
+                            "student_id": student_id,
+                            "language": language,
+                            "step_info": info,
+                            "audio_url": audio_url
+                        }))
                     continue
 
-                frame_lang = msg.get("language", language)
-                if frame_lang != language:
-                    language = frame_lang
+                # ── PING ────────────────────────────────────
+                if msg_type == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}))
+                    continue
 
-                server_stats["frames_processed"] += 1
-                student_stats["frames"] += 1
+                # ── FRAME ───────────────────────────────────
+                if msg_type == "frame":
+                    # Rate limit based on MAX_FPS
+                    now = time.time()
+                    if now - last_frame_time < min_frame_interval:
+                        continue
+                    last_frame_time = now
 
-                # Detect
-                detections = []
-                frame_width, frame_height = 640, 480
-                try:
-                    if detector and detector.model:
-                        detections, frame_width, frame_height = detector.detect_base64(base64_data)
-                        server_stats["total_detections"] += len(detections)
-                        student_stats["detections"] += len(detections)
-                except Exception as e:
-                    print(f"   [Main] Detection error: {e}")
+                    base64_data = msg.get("data", "")
+                    if not isinstance(base64_data, str) or not base64_data:
+                        continue
 
-                # FSM
-                fsm_result = {}
-                audio_url = None
-                try:
-                    if fsm:
-                        fsm_result = fsm.process_detections(detections, language)
+                    frame_lang = msg.get("language", language)
+                    if isinstance(frame_lang, str) and frame_lang != language:
+                        language = frame_lang
 
-                        # Build audio URL
-                        audio_key = fsm_result.get("audio_to_play")
-                        if audio_key:
-                            audio_url = f"/audio/{language}/{audio_key}.mp3"
+                    server_stats["frames_processed"] += 1
+                    student_stats["frames_processed"] = student_stats.get("frames_processed", 0) + 1
 
-                        if fsm_result.get("step_advance"):
-                            server_stats["step_advances"] += 1
-                            # Immediately queue the next step's intro audio
-                            next_step = fsm.get_current_step()
-                            if next_step and next_step.get("audio_intro") and not audio_url:
-                                audio_url = f"/audio/{language}/{next_step['audio_intro']}.mp3"
-                                fsm.intro_played_for_step = fsm.current_step_index
+                    # Detect objects
+                    detections = []
+                    frame_width, frame_height = 640, 480
+                    try:
+                        if detector and detector.model:
+                            detections, frame_width, frame_height = detector.detect_base64(base64_data)
+                            server_stats["total_detections"] += len(detections)
+                            student_stats["detections_count"] = student_stats.get("detections_count", 0) + len(detections)
+                    except Exception as e:
+                        print(f"   [WS] Detection error for {student_id}: {e}")
 
-                        if fsm_result.get("safety_alert"):
-                            server_stats["safety_alerts"] += 1
-                            student_stats["alerts"] += 1
-                except Exception as e:
-                    print(f"   [Main] FSM error: {e}")
-                    traceback.print_exc()
+                    # Process detections through student's FSM
+                    fsm_result = {}
+                    audio_url = None
+                    try:
+                        if student_fsm:
+                            fsm_result = student_fsm.process_detections(detections, language)
 
-                # Build response
-                step_info = fsm_result.get("step_info") or (fsm._build_step_info(language) if fsm else {})
-                response = {
-                    "type": "detection_result",
-                    "detections": detections,
-                    "count": len(detections),
-                    "frame_width": frame_width,
-                    "frame_height": frame_height,
-                    "step_info": step_info,
-                    "safety_alert": fsm_result.get("safety_alert"),
-                    "audio_url": audio_url,
-                    "step_advance": fsm_result.get("step_advance", False),
-                    "experiment_complete": fsm_result.get("experiment_complete", False),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-                await websocket.send_text(json.dumps(response))
+                            audio_key = fsm_result.get("audio_to_play")
+                            if audio_key:
+                                audio_url = f"/audio/{language}/{audio_key}.mp3"
 
-                # Broadcast to dashboards
-                dashboard_msg = {
-                    "type": "student_update",
-                    "detections": detections,
-                    "count": len(detections),
-                    "step_info": step_info,
-                    "safety_alert": fsm_result.get("safety_alert"),
-                    "step_advance": fsm_result.get("step_advance", False),
-                    "experiment_complete": fsm_result.get("experiment_complete", False),
-                    "student_stats": student_stats,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-                await manager.broadcast_to_dashboards(dashboard_msg)
+                            if fsm_result.get("step_advance"):
+                                server_stats["step_advances"] += 1
+                                student_stats["steps_completed"] = student_stats.get("steps_completed", 0) + 1
+                                print(f"   [WS] Step advance for {student_id} → step {student_fsm.current_step_index}")
+                                next_step = student_fsm.get_current_step()
+                                if next_step and next_step.get("audio_intro") and not audio_url:
+                                    audio_url = f"/audio/{language}/{next_step['audio_intro']}.mp3"
+                                    student_fsm.intro_played_for_step = student_fsm.current_step_index
+
+                            if fsm_result.get("safety_alert"):
+                                server_stats["safety_alerts"] += 1
+                                student_stats["safety_alerts_count"] = student_stats.get("safety_alerts_count", 0) + 1
+                                print(f"   [WS] Safety alert for {student_id}")
+                    except Exception as e:
+                        print(f"   [WS] FSM error for {student_id}: {e}")
+
+                    # Build response
+                    step_info = fsm_result.get("step_info") or (student_fsm._build_step_info(language) if student_fsm else {})
+                    ts = datetime.now(timezone.utc).isoformat()
+                    response = {
+                        "type": "detection_result",
+                        "student_id": student_id,
+                        "detections": detections,
+                        "count": len(detections),
+                        "frame_width": frame_width,
+                        "frame_height": frame_height,
+                        "step_info": step_info,
+                        "safety_alert": fsm_result.get("safety_alert"),
+                        "audio_url": audio_url,
+                        "step_advance": fsm_result.get("step_advance", False),
+                        "experiment_complete": fsm_result.get("experiment_complete", False),
+                        "timestamp": ts,
+                    }
+                    await websocket.send_text(json.dumps(response))
+
+                    # Broadcast to dashboards with rich per-student metrics
+                    dashboard_msg = {
+                        "type": "student_update",
+                        "student_id": student_id,
+                        "detections": detections,
+                        "count": len(detections),
+                        "step_info": step_info,
+                        "safety_alert": fsm_result.get("safety_alert"),
+                        "step_advance": fsm_result.get("step_advance", False),
+                        "experiment_complete": fsm_result.get("experiment_complete", False),
+                        "student_stats": manager.get_student_snapshot(student_id),
+                        "timestamp": ts,
+                    }
+                    await manager.broadcast_to_dashboards(dashboard_msg)
+
+            except WebSocketDisconnect:
+                raise  # re-raise so outer handler runs cleanup
+            except Exception as e:
+                print(f"   [WS] Error processing message for {student_id}: {e}")
 
     except WebSocketDisconnect:
-        print("   [Main] Student disconnected normally")
+        print(f"   [Main] Student {student_id} disconnected normally")
     except Exception as e:
-        print(f"   [Main] Student WS error: {e}")
+        print(f"   [Main] Student {student_id} WS error: {e}")
         traceback.print_exc()
     finally:
-        manager.disconnect_student(websocket)
-        await manager.broadcast_to_dashboards({
-            "type": "student_disconnected",
-            "student_count": len(manager.student_connections),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        if student_id:
+            manager.disconnect_student(student_id)
+            try:
+                await manager.broadcast_to_dashboards({
+                    "type": "student_disconnected",
+                    "student_id": student_id,
+                    "student_count": len(manager.student_connections),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass  # don't crash cleanup on broadcast failure
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -539,20 +672,30 @@ async def ws_dashboard(websocket: WebSocket):
         print(f"   [Main] Dashboard init sent (exp={init.get('experiment_name', '?')})")
 
         while True:
-            raw = await websocket.receive_text()
+            try:
+                raw = await websocket.receive_text()
+            except Exception:
+                break
             try:
                 msg = json.loads(raw)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(msg, dict):
                 continue
             msg_type = msg.get("type", "")
 
-            if msg_type == "ping":
-                await websocket.send_text(json.dumps({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}))
-            elif msg_type == "request_state":
-                state = {"type": "experiment_loaded", "timestamp": datetime.now(timezone.utc).isoformat()}
-                if fsm:
-                    state.update(fsm.get_full_state())
-                await websocket.send_text(json.dumps(state))
+            try:
+                if msg_type == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}))
+                elif msg_type == "request_state":
+                    state = {"type": "experiment_loaded", "timestamp": datetime.now(timezone.utc).isoformat()}
+                    if fsm:
+                        state.update(fsm.get_full_state())
+                    await websocket.send_text(json.dumps(state))
+            except WebSocketDisconnect:
+                raise
+            except Exception as e:
+                print(f"   [WS] Dashboard message error: {e}")
 
     except WebSocketDisconnect:
         print("   [Main] Dashboard disconnected normally")

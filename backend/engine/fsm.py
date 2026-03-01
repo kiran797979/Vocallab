@@ -43,10 +43,15 @@ class ExperimentFSM:
     5.  Last step (id == total_steps-1) transitions directly to experiment_complete.
     """
 
-    def __init__(self, config_path: str = _CFG_PATH):
+    def __init__(self, config_path: str = _CFG_PATH, demo_mode: bool = False, demo_timeout: float = 5.0):
         self.config = self._load_config(config_path)
         self.total_steps = self.config["total_steps"]
         self._lock = threading.Lock()
+
+        # ── demo mode ────────────────────────────────────────────────
+
+        self.demo_mode    = demo_mode
+        self.demo_timeout = demo_timeout
 
         # ── timing ─────────────────────────────────────────────────────
         self.start_time    = time.time()
@@ -96,6 +101,11 @@ class ExperimentFSM:
         with self._lock:
             lang = language if language in _HINT_KEYS else "en"
 
+            # ── 0. Boundary guard — clamp index, force complete ──────────
+            if self.current_step_index >= self.total_steps:
+                self.current_step_index = self.total_steps - 1
+                self.completed = True
+
             # ── 1. Safety check FIRST — always ──────────────────────────
             safety_alert = self._check_safety(detections)
 
@@ -111,7 +121,10 @@ class ExperimentFSM:
 
             step_cfg = self.config["steps"][self.current_step_index]
             required = set(step_cfg.get("required_objects", []))
-            detected_labels = {d["label"] for d in detections if "label" in d}
+            detected_labels = set()
+            for d in (detections or []):
+                if isinstance(d, dict) and isinstance(d.get("label"), str):
+                    detected_labels.add(d["label"])
             detected_required = required & detected_labels
             all_present = detected_required == required
 
@@ -123,6 +136,10 @@ class ExperimentFSM:
                 if not self.transition_sent:
                     audio_to_play = step_cfg.get("audio_transition")
                     self.transition_sent = True
+
+                # Demo mode: skip removal wait, advance immediately
+                if self.demo_mode:
+                    return self._do_advance(lang, safety_alert)
 
                 # Check for removal of ALL required objects
                 if all_present:
@@ -153,6 +170,23 @@ class ExperimentFSM:
             # ── 4. ACTIVE state — normal detection ───────────────────────
             audio_to_play = None
 
+            # Demo mode: auto-advance if stuck for demo_timeout seconds
+            if self.demo_mode and not all_present and required:
+                elapsed_on_step = time.time() - self.step_start
+                if elapsed_on_step >= self.demo_timeout:
+                    self.stable_count    = 0
+                    self.removal_count   = 0
+                    self.in_transition   = True
+                    self.transition_sent = False
+                    print(f"   [FSM] Demo auto-advance: step {self.current_step_index} after {elapsed_on_step:.1f}s")
+                    return self._result(
+                        step_info=self._build_step_info(lang, force_transition=True),
+                        safety_alert=safety_alert,
+                        step_advance=False,
+                        audio_to_play=step_cfg.get("audio_transition"),
+                        experiment_complete=False,
+                    )
+
             if all_present and required:
                 self.stable_count += 1
             else:
@@ -170,19 +204,7 @@ class ExperimentFSM:
                 self.in_transition  = True
                 self.transition_sent = False
 
-                # Last step → experiment complete immediately
-                if self.current_step_index >= self.total_steps - 1:
-                    self.completed = True
-                    self.in_transition = False
-                    return self._result(
-                        step_info=self._build_step_info(lang, force_complete=True),
-                        safety_alert=safety_alert,
-                        step_advance=True,
-                        audio_to_play=step_cfg.get("audio_transition"),
-                        experiment_complete=True,
-                    )
-
-                # Non-final step → enter transition state, send transition audio
+                # Enter transition state for all steps (including final)
                 return self._result(
                     step_info=self._build_step_info(lang, force_transition=True),
                     safety_alert=safety_alert,
@@ -191,13 +213,32 @@ class ExperimentFSM:
                     experiment_complete=False,
                 )
 
+            # Active state — return detection-aware step info with real progress
             return self._result(
-                step_info=self._build_step_info(lang),
+                step_info=self._build_step_info_with_detections(lang, detected_labels),
                 safety_alert=safety_alert,
                 step_advance=False,
                 audio_to_play=audio_to_play,
                 experiment_complete=False,
             )
+
+    def get_current_step(self) -> dict:
+        """Return the configuration dict for the current step."""
+        if self.current_step_index < self.total_steps:
+            return self.config["steps"][self.current_step_index]
+        return None
+
+    def get_stats(self) -> dict:
+        """Return runtime statistics for the FSM."""
+        return {
+            "current_step_index": self.current_step_index,
+            "total_steps": self.total_steps,
+            "completed": self.completed,
+            "in_transition": self.in_transition,
+            "elapsed_total": round(time.time() - self.start_time, 1),
+            "stable_count": self.stable_count,
+            "removal_count": self.removal_count
+        }
 
     def get_full_state(self) -> dict:
         """Return serialisable full state snapshot."""
@@ -231,18 +272,32 @@ class ExperimentFSM:
     # ─────────────────────────────────────────────────────────────────────
 
     def _do_advance(self, lang: str, safety_alert) -> dict:
-        """Actually advance to the next step (called after removal detected)."""
+        """Actually advance index or complete experiment."""
+        
+        # If it's the last step, mark as complete instead of advancing index
+        if self.current_step_index >= self.total_steps - 1:
+            self.completed = True
+            self.in_transition = False
+            self.transition_sent = False
+            return self._result(
+                step_info=self._build_step_info(lang, force_complete=True),
+                safety_alert=safety_alert,
+                step_advance=True,
+                audio_to_play=None, # Already sent on transition start
+                experiment_complete=True,
+            )
+
+        # Normal advance
         self.current_step_index   += 1
         self.stable_count          = 0
         self.removal_count         = 0
         self.in_transition         = False
         self.transition_sent       = False
-        self.intro_played_for_step = -1  # reset so intro plays fresh
+        self.intro_played_for_step = -1
         self.step_start            = time.time()
 
         new_step_cfg = self.config["steps"][self.current_step_index]
         intro_audio  = new_step_cfg.get("audio_intro")
-        # Mark intro as played so it doesn't double-play on next frame
         self.intro_played_for_step = self.current_step_index
 
         return self._result(
@@ -257,7 +312,7 @@ class ExperimentFSM:
                          force_transition: bool = False,
                          force_complete: bool = False) -> dict:
         """Build step_info dict for the current step."""
-        idx      = self.current_step_index
+        idx      = min(self.current_step_index, self.total_steps - 1)
         step_cfg = self.config["steps"][idx]
         required = step_cfg.get("required_objects", [])
         now      = time.time()
@@ -296,7 +351,7 @@ class ExperimentFSM:
 
     def _build_step_info_with_detections(self, lang: str, detected_labels: set) -> dict:
         """Build step_info with real detection data (used in active state)."""
-        idx      = self.current_step_index
+        idx      = min(self.current_step_index, self.total_steps - 1)
         step_cfg = self.config["steps"][idx]
         required = step_cfg.get("required_objects", [])
         now      = time.time()
@@ -325,33 +380,41 @@ class ExperimentFSM:
 
     def _check_safety(self, detections: list) -> dict | None:
         """Return a safety alert dict if a dangerous pair is too close, else None."""
+        if not detections or not self.dangerous_pairs:
+            return None
         now = time.time()
         if now - self._last_alert_time < self.alert_cooldown:
             return None
 
-        centers = {}
-        for d in detections:
-            label  = d.get("label", "")
-            center = d.get("center", [0, 0])
-            if label:
-                centers[label] = center
+        try:
+            centers = {}
+            for d in detections:
+                if not isinstance(d, dict):
+                    continue
+                label  = d.get("label", "")
+                center = d.get("center")
+                if label and isinstance(center, (list, tuple)) and len(center) >= 2:
+                    centers[label] = center
 
-        for pair in self.dangerous_pairs:
-            if len(pair) < 2:
-                continue
-            a, b = pair[0], pair[1]
-            if a in centers and b in centers:
-                cx1, cy1 = centers[a]
-                cx2, cy2 = centers[b]
-                dist = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
-                if dist < self.proximity_threshold:
-                    self._last_alert_time = now
-                    return {
-                        "type":    "proximity",
-                        "message": f"Warning! Keep {a} and {b} apart!",
-                        "objects": [a, b],
-                        "distance": round(dist, 1),
-                    }
+            for pair in self.dangerous_pairs:
+                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                    continue
+                a, b = pair[0], pair[1]
+                if a in centers and b in centers:
+                    cx1, cy1 = centers[a]
+                    cx2, cy2 = centers[b]
+                    dist = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
+                    if dist < self.proximity_threshold:
+                        self._last_alert_time = now
+                        print(f"   [FSM] Safety alert: {a} <-> {b} dist={dist:.0f}px")
+                        return {
+                            "type":    "proximity",
+                            "message": f"Warning! Keep {a} and {b} apart!",
+                            "objects": [a, b],
+                            "distance": round(dist, 1),
+                        }
+        except Exception as e:
+            print(f"   [FSM] Safety check error (ignored): {e}")
         return None
 
     def _result(self, step_info, safety_alert, step_advance, audio_to_play, experiment_complete) -> dict:

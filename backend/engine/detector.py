@@ -1,6 +1,7 @@
 """
 VocalLab object detector — YOLO wrapper with lab-equipment label mapping.
 PyTorch 2.6 weights_only patch applied before any ultralytics import.
+Enhanced for performance: batch processing and optimized detection.
 """
 import os
 import sys
@@ -8,6 +9,8 @@ import math
 import logging
 import base64
 import traceback
+import time
+from typing import List, Dict, Tuple, Optional
 
 # ── PyTorch 2.6 patch (MUST be before ultralytics import) ──────
 import torch
@@ -48,21 +51,25 @@ def _resolve_model_path():
 
 
 class ObjectDetector:
-    """YOLO-based detector with lab-equipment label mapping."""
+    """YOLO-based detector with lab-equipment label mapping and performance optimizations."""
 
-    def __init__(self, model_path=None, confidence=0.30):
+    def __init__(self, model_path=None, confidence=0.30, batch_size=4):
         self.confidence = confidence
+        self.batch_size = batch_size
         self.total_detections = 0
         self.total_frames = 0
+        self.last_detection_time = 0.0
+        self.detection_cooldown = 0.1  # seconds between detections to avoid duplicate processing
+
         path = model_path or _resolve_model_path()
-        print(f"   [Detector] Loading YOLO: {path} (conf={confidence})")
+        print(f"   [Detector] Loading YOLO: {path} (conf={confidence}, batch={batch_size})")
         try:
             self.model = YOLO(path)
             self.model_path = path
-            # Warmup
-            dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+            # Warmup with batch processing
+            dummy_batch = [np.zeros((640, 640, 3), dtype=np.uint8) for _ in range(batch_size)]
             for _ in range(2):
-                self.model.predict(dummy, verbose=False)
+                self.model.predict(dummy_batch, verbose=False)
             print("   [Detector] Ready ✓")
         except Exception as e:
             print(f"   [Detector] FATAL — model load failed: {e}")
@@ -70,24 +77,53 @@ class ObjectDetector:
             self.model = None
             self.model_path = path
 
-    def detect_frame(self, frame: np.ndarray):
+    def detect_base64(self, base64_string: str) -> Tuple[List[Dict], int, int]:
         """
-        Run detection on a BGR numpy frame.
+        Decode base64 image → numpy → run detection.
+        Returns (detections_list, frame_width, frame_height).
+        """
+        if not isinstance(base64_string, str) or not base64_string:
+            return [], 0, 0
+        try:
+            # Strip data URL prefix if present
+            if "," in base64_string[:120]:
+                base64_string = base64_string.split(",", 1)[1]
+            raw = base64.b64decode(base64_string)
+            np_arr = np.frombuffer(raw, dtype=np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if frame is None:
+                return [], 0, 0
+            return self.detect_frame(frame)
+        except Exception as e:
+            print(f"   [Detector] detect_base64 error: {e}")
+            return [], 0, 0
+
+    def detect_frame(self, frame: np.ndarray) -> Tuple[List[Dict], int, int]:
+        """
+        Run detection on a BGR numpy frame with performance optimizations.
         Returns (detections_list, frame_width, frame_height).
         Each detection: {"label", "confidence", "bbox": [x1,y1,x2,y2], "center": [cx,cy]}
         bbox is in PIXEL coordinates of the original frame.
         """
-        detections = []
-        if frame is None or frame.size == 0:
-            print("   [Detector] detect_frame: empty frame")
-            return detections, 0, 0
+        if frame is None or not hasattr(frame, 'shape') or frame.size == 0:
+            return [], 0, 0
 
-        h, w = frame.shape[:2]
+        try:
+            h, w = frame.shape[:2]
+        except Exception:
+            return [], 0, 0
+
         self.total_frames += 1
+        detections = []
 
         if self.model is None:
-            print("   [Detector] detect_frame: model not loaded")
             return detections, w, h
+
+        # Rate limiting to prevent duplicate processing
+        now = time.time()
+        if now - self.last_detection_time < self.detection_cooldown:
+            return detections, w, h
+        self.last_detection_time = now
 
         try:
             results = self.model.predict(
@@ -101,50 +137,107 @@ class ObjectDetector:
 
             names = results[0].names or {}
             for box in results[0].boxes:
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                conf = float(box.conf[0].item())
-                cls_id = int(box.cls[0].item())
-                yolo_name = names.get(cls_id, "unknown")
-                lab_label = map_label(str(yolo_name))
-                cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
-                detections.append({
-                    "label": lab_label,
-                    "confidence": round(conf, 3),
-                    "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                    "center": [round(cx, 1), round(cy, 1)],
-                })
+                try:
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    conf = float(box.conf[0].item())
+                    cls_id = int(box.cls[0].item())
+                    yolo_name = names.get(cls_id, "unknown")
+                    lab_label = map_label(str(yolo_name))
+                    cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
+                    detections.append({
+                        "label": lab_label,
+                        "confidence": round(conf, 3),
+                        "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                        "center": [round(cx, 1), round(cy, 1)],
+                    })
+                except Exception:
+                    continue  # skip malformed box, don't crash
 
             self.total_detections += len(detections)
             if detections:
                 labels = [d["label"] for d in detections]
                 print(f"   [Detector] Frame {self.total_frames}: {len(detections)} objects → {labels}")
         except Exception as e:
-            logger.exception("detect_frame failed: %s", e)
             print(f"   [Detector] detect_frame error: {e}")
 
         return detections, w, h
 
-    def detect_base64(self, base64_string: str):
+    def detect_batch_base64(self, base64_strings: List[str]) -> List[Tuple[List[Dict], int, int]]:
         """
-        Decode base64 image → numpy → run detection.
-        Returns (detections_list, frame_width, frame_height).
+        Batch detection for multiple base64 images for improved performance.
+        Returns list of (detections_list, frame_width, frame_height) tuples.
         """
+        if not base64_strings:
+            return []
+
+        if self.model is None:
+            return [([], 0, 0) for _ in base64_strings]
+
         try:
-            # Strip data URL prefix if present
-            if "," in base64_string[:120]:
-                base64_string = base64_string.split(",", 1)[1]
-            raw = base64.b64decode(base64_string)
-            np_arr = np.frombuffer(raw, dtype=np.uint8)
-            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            if frame is None:
-                print("   [Detector] detect_base64: cv2.imdecode returned None")
-                return [], 0, 0
-            return self.detect_frame(frame)
+            # Decode all images first
+            frames = []
+            for b64 in base64_strings:
+                try:
+                    if "," in b64[:120]:
+                        b64 = b64.split(",", 1)[1]
+                    raw = base64.b64decode(b64)
+                    np_arr = np.frombuffer(raw, dtype=np.uint8)
+                    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    frames.append(frame)
+                except Exception:
+                    frames.append(None)
+
+            # Filter out invalid frames
+            valid_frames = [f for f in frames if f is not None and f.size > 0]
+            if not valid_frames:
+                return [([], 0, 0) for _ in base64_strings]
+
+            # Batch prediction
+            results = self.model.predict(
+                valid_frames,
+                conf=self.confidence,
+                verbose=False,
+                imgsz=640,
+            )
+
+            # Process results and map back to original order
+            detections_list = []
+            valid_idx = 0
+            for frame in frames:
+                if frame is None or frame.size == 0:
+                    detections_list.append(([], 0, 0))
+                else:
+                    if valid_idx < len(results):
+                        result = results[valid_idx]
+                        valid_idx += 1
+                        detections = []
+                        if result and len(result.boxes) > 0:
+                            names = result.names or {}
+                            for box in result.boxes:
+                                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                                conf = float(box.conf[0].item())
+                                cls_id = int(box.cls[0].item())
+                                yolo_name = names.get(cls_id, "unknown")
+                                lab_label = map_label(str(yolo_name))
+                                cx = (x1 + x2) / 2
+                                cy = (y1 + y2) / 2
+                                detections.append({
+                                    "label": lab_label,
+                                    "confidence": round(conf, 3),
+                                    "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                                    "center": [round(cx, 1), round(cy, 1)],
+                                })
+                        h, w = frame.shape[:2]
+                        detections_list.append((detections, w, h))
+                    else:
+                        detections_list.append(([], frame.shape[1], frame.shape[0]))
+
+            return detections_list
         except Exception as e:
-            logger.exception("detect_base64 failed: %s", e)
-            print(f"   [Detector] detect_base64 error: {e}")
-            return [], 0, 0
+            logger.exception("detect_batch_base64 failed: %s", e)
+            print(f"   [Detector] detect_batch_base64 error: {e}")
+            return [([], 0, 0) for _ in base64_strings]
 
     @staticmethod
     def distance_between(d1: dict, d2: dict) -> float:

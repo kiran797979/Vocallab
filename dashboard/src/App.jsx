@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
-const WS_URL = 'ws://localhost:8000/ws/dashboard';
+const WS_URL = `ws://${window.location.hostname}:8000/ws/dashboard`;
 const RECONNECT_MS = 3000;
 const MAX_LOG = 50;
+const DEBOUNCE_MS = 250;  // batch student_update renders
 
 const MOCK_STUDENTS = [
   { id: 'STU-001', name: 'Aarav Sharma', status: 'active', step: 2, total: 4, alerts: 0, lang: 'Hindi' },
@@ -25,6 +26,7 @@ const EXPERIMENTS = [
 const STEP_NAMES = ['Setup Equipment', 'Pour Acid (HCl)', 'Add Base & Indicator', 'Record Observations'];
 
 const fmt = (d) => d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+const fmtDur = (s) => { if (!s || s < 0) return '0s'; const m = Math.floor(s / 60), sec = Math.floor(s % 60); return m > 0 ? `${m}m ${sec}s` : `${sec}s`; };
 const ago = (d) => {
   const s = Math.floor((Date.now() - d) / 1000);
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
@@ -32,22 +34,22 @@ const ago = (d) => {
 
 // ─── COLORS ──────────────────────────────────────────────────────────────────
 const C = {
-  bg: '#060a13',
-  accent: '#00d4aa',
-  accentRgb: '0, 212, 170',
-  blue: '#3b82f6',
-  purple: '#a855f7',
-  danger: '#ef4444',
-  dangerRgb: '239, 68, 68',
-  success: '#22c55e',
-  successRgb: '34, 197, 94',
-  warn: '#f59e0b',
-  text: '#e2e8f0',
-  dim: '#64748b',
-  muted: '#475569',
-  surface: 'rgba(15, 23, 42, 0.5)',
-  border: 'rgba(255, 255, 255, 0.06)',
-  borderHover: 'rgba(0, 212, 170, 0.2)',
+  bg: '#F8FAFC',
+  accent: '#2563EB',
+  accentRgb: '37, 99, 235',
+  blue: '#1E40AF',
+  purple: '#2563EB',
+  danger: '#DC2626',
+  dangerRgb: '220, 38, 38',
+  success: '#16A34A',
+  successRgb: '22, 163, 74',
+  warn: '#D97706',
+  text: '#1E293B',
+  dim: '#64748B',
+  muted: '#94A3B8',
+  surface: '#FFFFFF',
+  border: '#E2E8F0',
+  borderHover: '#2563EB',
 };
 
 // ─── MAIN APP ────────────────────────────────────────────────────────────────
@@ -60,12 +62,27 @@ export default function App() {
   const [safety, setSafety] = useState([]);
   const [log, setLog] = useState([]);
   const [lastMsg, setLastMsg] = useState(null);
+  const [liveStudents, setLiveStudents] = useState({});   // student_id -> latest snapshot
   const wsRef = useRef(null);
   const reconRef = useRef(null);
   const stepRef = useRef(step);
   const onMsgRef = useRef(null);
+  // Debounce buffer: accumulate student snapshots, flush every DEBOUNCE_MS
+  const studentBufRef = useRef({});
+  const flushTimerRef = useRef(null);
 
   useEffect(() => { stepRef.current = step; }, [step]);
+
+  // Flush debounced student updates into state
+  const flushStudentBuf = useCallback(() => {
+    const buf = studentBufRef.current;
+    if (Object.keys(buf).length === 0) return;
+    setLiveStudents(p => ({ ...p, ...buf }));
+    studentBufRef.current = {};
+  }, []);
+
+  // Cleanup flush timer on unmount
+  useEffect(() => () => { if (flushTimerRef.current) clearTimeout(flushTimerRef.current); }, []);
 
   const pushLog = useCallback((type, msg) => {
     setLog((p) => [{ id: Date.now() + Math.random(), type, msg, time: new Date() }, ...p].slice(0, MAX_LOG));
@@ -90,6 +107,20 @@ export default function App() {
         pushLog('danger', `⚠ ${data.safety_alert.message || 'Safety alert'}`);
       }
       if (data.experiment_complete) pushLog('success', '🎉 Experiment completed!');
+      // Buffer per-student snapshot (debounced to reduce re-renders)
+      if (data.student_id) {
+        studentBufRef.current[data.student_id] = {
+          id: data.student_id,
+          step_info: data.step_info || {},
+          student_stats: data.student_stats || {},
+          experiment_complete: data.experiment_complete || false,
+          safety_alert: data.safety_alert || null,
+          last_seen: Date.now(),
+        };
+        if (!flushTimerRef.current) {
+          flushTimerRef.current = setTimeout(() => { flushTimerRef.current = null; flushStudentBuf(); }, DEBOUNCE_MS);
+        }
+      }
     } else if (t === 'step_advance') {
       const s = data.step ?? data.current_step ?? data.step_index;
       setStep(s); pushLog('step', `Step ${(s || 0) + 1}: ${data.step_name || STEP_NAMES[s] || 'Unknown'}`);
@@ -104,8 +135,9 @@ export default function App() {
       pushLog('info', `Student connected (${data.student_count || 1} total)`);
     } else if (t === 'student_disconnected') {
       pushLog('info', `Student disconnected (${data.student_count || 0} total)`);
+      if (data.student_id) setLiveStudents(p => { const n = { ...p }; delete n[data.student_id]; return n; });
     } else if (t === 'experiment_reset') {
-      setStep(0); setObjects([]); setSafety([]); pushLog('info', '🔄 Experiment reset');
+      setStep(0); setObjects([]); setSafety([]); setLiveStudents({}); studentBufRef.current = {}; pushLog('info', '🔄 Experiment reset');
     } else if (t !== 'heartbeat' && t !== 'pong') {
       if (data.current_step !== undefined) setStep(data.current_step);
       if (data.objects) setObjects(data.objects);
@@ -117,11 +149,13 @@ export default function App() {
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    // Close stale socket to prevent memory leaks
+    if (wsRef.current) { try { wsRef.current.onclose = null; wsRef.current.close(); } catch {} wsRef.current = null; }
     setWs('connecting');
     try {
       const s = new WebSocket(WS_URL); wsRef.current = s;
       s.onopen = () => { setWs('connected'); if (reconRef.current) { clearTimeout(reconRef.current); reconRef.current = null; } };
-      s.onmessage = (e) => { try { onMsgRef.current(JSON.parse(e.data)); setLastMsg(new Date()); } catch { } };
+      s.onmessage = (e) => { try { onMsgRef.current(JSON.parse(e.data)); setLastMsg(new Date()); } catch {} };
       s.onclose = () => { setWs('disconnected'); wsRef.current = null; reconRef.current = setTimeout(connect, RECONNECT_MS); };
       s.onerror = () => setWs('disconnected');
     } catch { setWs('disconnected'); reconRef.current = setTimeout(connect, RECONNECT_MS); }
@@ -137,33 +171,31 @@ export default function App() {
     { id: 'library', icon: '📚', label: 'Experiment Library' },
   ];
 
-  const statusColor = ws === 'connected' ? C.accent : ws === 'connecting' ? C.warn : C.danger;
+  const statusColor = ws === 'connected' ? C.success : ws === 'connecting' ? C.warn : C.danger;
 
   return (
-    <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-      {/* Animated mesh background */}
-      <div className="mesh-bg" />
+    <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', background: C.bg }}>
 
       {/* ═══ HEADER ═══ */}
-      <header className="glass-static" style={{
-        position: 'sticky', top: 0, zIndex: 50, borderRadius: 0,
+      <header style={{
+        position: 'sticky', top: 0, zIndex: 50,
         borderBottom: `1px solid ${C.border}`,
-        background: 'rgba(6, 10, 19, 0.8)',
-        backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
+        background: '#FFFFFF',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
       }}>
         <div style={{ maxWidth: 1320, margin: '0 auto', padding: '0 28px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 64 }}>
             {/* Logo */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <div className="logo-badge" style={{
-                width: 40, height: 40, borderRadius: 12,
-                background: `linear-gradient(135deg, ${C.accent}, ${C.blue})`,
+              <div style={{
+                width: 40, height: 40, borderRadius: 8,
+                background: C.accent,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontWeight: 900, fontSize: 18, color: '#fff',
               }}>V</div>
               <div>
-                <div style={{ fontWeight: 800, fontSize: 20, letterSpacing: '-0.03em' }}>
-                  <span style={{ color: '#e2e8f0' }}>Vocal</span><span className="logo-text">Lab</span>
+                <div className="font-pixel" style={{ fontSize: 14, letterSpacing: '0.02em', color: C.text }}>
+                  Vocal<span style={{ color: C.accent }}>Lab</span>
                 </div>
                 <div style={{ fontSize: 10, color: C.dim, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Instructor Dashboard</div>
               </div>
@@ -172,11 +204,8 @@ export default function App() {
             {/* Right side */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               {/* Live status */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', borderRadius: 99, background: `${statusColor}12`, border: `1px solid ${statusColor}30` }}>
-                <div style={{ position: 'relative' }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor }} />
-                  {ws === 'connected' && <div style={{ position: 'absolute', inset: -3, borderRadius: '50%', border: `2px solid ${statusColor}`, animation: 'ripple 2s ease-out infinite' }} />}
-                </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', borderRadius: 6, background: ws === 'connected' ? '#F0FDF4' : ws === 'connecting' ? '#FFFBEB' : '#FEF2F2', border: `1px solid ${statusColor}40` }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor }} />
                 <span style={{ fontSize: 11, fontWeight: 700, color: statusColor, letterSpacing: '0.06em' }}>
                   {ws === 'connected' ? 'LIVE' : ws === 'connecting' ? 'CONNECTING' : 'OFFLINE'}
                 </span>
@@ -184,13 +213,13 @@ export default function App() {
               {lastMsg && <span style={{ fontSize: 11, color: C.dim, fontWeight: 500 }}>{ago(lastMsg)}</span>}
               {/* AMD */}
               <div style={{
-                padding: '5px 12px', borderRadius: 8,
-                background: 'linear-gradient(135deg, rgba(0,212,170,0.08), rgba(59,130,246,0.08))',
+                padding: '5px 12px', borderRadius: 6,
+                background: '#EFF6FF',
                 border: `1px solid ${C.border}`, fontSize: 10, fontWeight: 700,
                 display: 'flex', gap: 6, alignItems: 'center',
               }}>
                 <span style={{ color: C.dim, letterSpacing: '0.1em' }}>AMD</span>
-                <span className="gradient-text">Ryzen™ AI</span>
+                <span style={{ color: C.accent }}>Ryzen™ AI</span>
               </div>
             </div>
           </div>
@@ -203,10 +232,10 @@ export default function App() {
                 <button key={t.id} onClick={() => setTab(t.id)} style={{
                   padding: '12px 20px', fontSize: 13, fontWeight: active ? 700 : 500,
                   display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
-                  background: active ? `rgba(${C.accentRgb}, 0.06)` : 'transparent',
+                  background: active ? '#EFF6FF' : 'transparent',
                   color: active ? C.accent : C.dim,
                   border: 'none', borderBottom: `2px solid ${active ? C.accent : 'transparent'}`,
-                  transition: 'all 0.25s', whiteSpace: 'nowrap', borderRadius: '8px 8px 0 0',
+                  transition: 'all 0.2s', whiteSpace: 'nowrap', borderRadius: '6px 6px 0 0',
                 }}>
                   <span style={{ fontSize: 15 }}>{t.icon}</span> {t.label}
                 </button>
@@ -219,7 +248,7 @@ export default function App() {
       {/* ═══ MAIN ═══ */}
       <main style={{ flex: 1, maxWidth: 1320, margin: '0 auto', width: '100%', padding: '28px 28px 60px', position: 'relative', zIndex: 1 }}>
         {tab === 'live' && <LiveTab info={info} step={step} objects={objects} safety={safety} log={log} />}
-        {tab === 'students' && <StudentsTab />}
+        {tab === 'students' && <StudentsTab liveStudents={liveStudents} />}
         {tab === 'library' && <LibraryTab />}
       </main>
     </div>
@@ -230,26 +259,16 @@ export default function App() {
 // GLASS CARD
 // ═════════════════════════════════════════════════════════════════════════════
 function GlassCard({ children, style = {}, danger = false, delay = 0, hover = true, glow = false }) {
-  const [hovered, setHovered] = useState(false);
+  const cls = danger ? 'card-danger' : hover ? 'card' : 'card-static';
   return (
     <div
-      className={hover ? 'glass' : 'glass-static'}
-      onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      className={cls}
       style={{
         padding: 22, position: 'relative', overflow: 'hidden',
-        animation: `fadeIn 0.5s ease-out ${delay}s both`,
-        ...(danger ? { background: 'rgba(30, 10, 20, 0.5)', borderColor: `rgba(${C.dangerRgb}, 0.2)` } : {}),
-        ...(glow && !danger ? { animation: `fadeIn 0.5s ease-out ${delay}s both, borderGlow 3s ease-in-out infinite` } : {}),
+        animation: `fadeIn 0.4s ease-out ${delay}s both`,
         ...style,
       }}
     >
-      {/* Subtle top accent line */}
-      {glow && !danger && (
-        <div style={{
-          position: 'absolute', top: 0, left: '10%', right: '10%', height: 1,
-          background: `linear-gradient(90deg, transparent, rgba(${C.accentRgb}, 0.4), transparent)`,
-        }} />
-      )}
       {children}
     </div>
   );
@@ -265,19 +284,13 @@ function CircularProgress({ value, size = 80, strokeWidth = 6 }) {
   return (
     <div style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
       <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth={strokeWidth} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#E2E8F0" strokeWidth={strokeWidth} />
         <circle cx={size / 2} cy={size / 2} r={r} fill="none"
-          stroke={`url(#grad-${size})`}
+          stroke={C.accent}
           strokeWidth={strokeWidth} strokeLinecap="round"
           strokeDasharray={circ} strokeDashoffset={offset}
-          style={{ transition: 'stroke-dashoffset 0.8s ease-out', filter: `drop-shadow(0 0 6px rgba(${C.accentRgb}, 0.4))` }}
+          style={{ transition: 'stroke-dashoffset 0.8s ease-out' }}
         />
-        <defs>
-          <linearGradient id={`grad-${size}`} x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor={C.accent} />
-            <stop offset="100%" stopColor={C.blue} />
-          </linearGradient>
-        </defs>
       </svg>
       <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
         <span style={{ fontSize: size > 60 ? 20 : 14, fontWeight: 800, color: C.text }}>{value}%</span>
@@ -297,8 +310,8 @@ function LiveTab({ info, step, objects, safety, log }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* Title */}
       <div style={{ animation: 'fadeIn 0.4s ease-out both' }}>
-        <h1 style={{ fontSize: 26, fontWeight: 900, letterSpacing: '-0.03em' }}>
-          Live <span className="gradient-text">Experiment</span>
+        <h1 className="font-pixel" style={{ fontSize: 16, color: C.text }}>
+          Live Experiment
         </h1>
         <p style={{ fontSize: 14, color: C.dim, marginTop: 6, fontWeight: 500 }}>Real-time progress, detections, and safety monitoring</p>
       </div>
@@ -307,18 +320,18 @@ function LiveTab({ info, step, objects, safety, log }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
         {[
           { icon: '🔬', label: 'Experiment', value: info?.name || 'Waiting...', color: C.accent },
-          { icon: '📍', label: 'Current Step', value: step !== null ? `${step + 1} of ${total}` : '—', color: C.accent },
+          { icon: '📍', label: 'Current Step', value: step !== null ? `${step + 1} of ${total}` : '—', color: C.blue },
           { icon: '👁', label: 'Detections', value: objects.length, color: objects.length > 0 ? C.accent : C.dim },
           { icon: '🛡', label: 'Safety', value: safety.length > 0 ? `${safety.length} Alert${safety.length > 1 ? 's' : ''}` : 'Clear', color: safety.length > 0 ? C.danger : C.success },
         ].map((s, i) => (
           <GlassCard key={i} delay={0.05 + i * 0.06} style={{ padding: '16px 18px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{
-                width: 40, height: 40, borderRadius: 12,
-                background: `${s.color}12`,
+                width: 40, height: 40, borderRadius: 8,
+                background: '#EFF6FF',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: 18, flexShrink: 0,
-                border: `1px solid ${s.color}20`,
+                border: '1px solid #DBEAFE',
               }}>{s.icon}</div>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontSize: 10, fontWeight: 600, color: C.dim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 3 }}>{s.label}</div>
@@ -354,25 +367,22 @@ function LiveTab({ info, step, objects, safety, log }) {
                     {/* Bar segment */}
                     <div style={{
                       height: 4, borderRadius: 99, marginBottom: 10,
-                      background: done ? `linear-gradient(90deg, ${C.accent}, ${C.blue})` : active ? `rgba(${C.accentRgb}, 0.35)` : 'rgba(255,255,255,0.06)',
-                      boxShadow: done ? `0 0 8px rgba(${C.accentRgb}, 0.3)` : 'none',
-                      transition: 'all 0.6s ease',
+                      background: done ? C.accent : active ? '#93C5FD' : '#E2E8F0',
+                      transition: 'all 0.4s ease',
                     }} />
                     {/* Step label */}
                     <div style={{
                       padding: '10px 12px', borderRadius: 10,
-                      background: active ? `rgba(${C.accentRgb}, 0.08)` : 'rgba(255,255,255,0.02)',
-                      border: `1px solid ${active ? `rgba(${C.accentRgb}, 0.25)` : 'rgba(255,255,255,0.04)'}`,
+                      background: active ? '#EFF6FF' : '#F8FAFC',
+                      border: `1px solid ${active ? '#BFDBFE' : '#E2E8F0'}`,
                       transition: 'all 0.3s',
                     }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <div style={{
                           width: 22, height: 22, borderRadius: '50%', fontSize: 10, fontWeight: 700,
                           display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                          background: done ? `linear-gradient(135deg, ${C.accent}, ${C.blue})` : active ? `rgba(${C.accentRgb}, 0.2)` : 'rgba(255,255,255,0.06)',
-                          color: done || active ? '#fff' : C.dim,
-                          boxShadow: active ? `0 0 12px rgba(${C.accentRgb}, 0.3)` : 'none',
-                          animation: active ? 'pulseGlow 2s ease-in-out infinite' : 'none',
+                          background: done ? C.accent : active ? '#DBEAFE' : '#F1F5F9',
+                          color: done ? '#fff' : active ? C.accent : C.dim,
                         }}>
                           {done ? '✓' : i + 1}
                         </div>
@@ -402,10 +412,9 @@ function LiveTab({ info, step, objects, safety, log }) {
             <h3 style={{ fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>🛡️ Safety Status</h3>
             {safety.length > 0 && (
               <span style={{
-                fontSize: 10, fontWeight: 700, padding: '4px 10px', borderRadius: 99,
-                background: `rgba(${C.dangerRgb}, 0.15)`, color: C.danger,
-                border: `1px solid rgba(${C.dangerRgb}, 0.3)`,
-                animation: 'pulseDot 1.4s ease-in-out infinite',
+                fontSize: 10, fontWeight: 700, padding: '4px 10px', borderRadius: 6,
+                background: '#FEF2F2', color: C.danger,
+                border: `1px solid #FECACA`,
               }}>{safety.length} ALERT{safety.length > 1 ? 'S' : ''}</span>
             )}
           </div>
@@ -413,29 +422,29 @@ function LiveTab({ info, step, objects, safety, log }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1, maxHeight: 240, overflowY: 'auto' }}>
               {safety.map((a, i) => (
                 <div key={a.id} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 12,
-                  background: `rgba(${C.dangerRgb}, 0.06)`, border: `1px solid rgba(${C.dangerRgb}, 0.12)`,
-                  animation: `slideIn 0.35s ease-out ${i * 0.05}s both`,
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8,
+                  background: '#FEF2F2', border: '1px solid #FECACA',
+                  animation: `slideIn 0.3s ease-out ${i * 0.05}s both`,
                 }}>
                   <div style={{
-                    width: 32, height: 32, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    background: `rgba(${C.dangerRgb}, 0.12)`, fontSize: 14, flexShrink: 0,
+                    width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: '#FEE2E2', fontSize: 14, flexShrink: 0,
                   }}>🚨</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: '#fca5a5' }}>{a.msg}</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.danger }}>{a.msg}</div>
                     <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>{fmt(a.time)}</div>
                   </div>
                   <span style={{
                     fontSize: 8, fontWeight: 800, padding: '3px 7px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.05em',
-                    background: a.sev === 'critical' ? `rgba(${C.dangerRgb}, 0.2)` : 'rgba(249,115,22,0.15)',
-                    color: a.sev === 'critical' ? '#fca5a5' : '#fdba74',
+                    background: a.sev === 'critical' ? '#FEE2E2' : '#FEF3C7',
+                    color: a.sev === 'critical' ? C.danger : '#D97706',
                   }}>{a.sev}</span>
                 </div>
               ))}
             </div>
           ) : (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px 0' }}>
-              <div style={{ fontSize: 36, marginBottom: 8, animation: 'float 3s ease-in-out infinite' }}>✅</div>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>✅</div>
               <div style={{ fontSize: 14, fontWeight: 700, color: C.success }}>All Clear</div>
               <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>Following safety protocol</div>
             </div>
@@ -448,9 +457,9 @@ function LiveTab({ info, step, objects, safety, log }) {
             <h3 style={{ fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>👁️ Detected Objects</h3>
             {objects.length > 0 && (
               <span style={{
-                fontSize: 10, fontWeight: 700, padding: '4px 10px', borderRadius: 99,
-                background: `rgba(${C.accentRgb}, 0.1)`, color: C.accent,
-                border: `1px solid rgba(${C.accentRgb}, 0.25)`,
+                fontSize: 10, fontWeight: 700, padding: '4px 10px', borderRadius: 6,
+                background: '#EFF6FF', color: C.accent,
+                border: '1px solid #BFDBFE',
               }}>{objects.length} found</span>
             )}
           </div>
@@ -462,13 +471,13 @@ function LiveTab({ info, step, objects, safety, log }) {
                 return (
                   <div key={`${label}-${i}`} style={{
                     display: 'inline-flex', alignItems: 'center', gap: 6,
-                    padding: '7px 14px', borderRadius: 10,
-                    background: `rgba(${C.accentRgb}, 0.08)`,
-                    border: `1px solid rgba(${C.accentRgb}, 0.18)`,
+                    padding: '7px 14px', borderRadius: 6,
+                    background: '#EFF6FF',
+                    border: '1px solid #BFDBFE',
                     color: C.accent, fontSize: 12, fontWeight: 600,
                     animation: `slideIn 0.3s ease-out ${i * 0.04}s both`,
                   }}>
-                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: C.accent, boxShadow: `0 0 6px rgba(${C.accentRgb}, 0.5)` }} />
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: C.accent }} />
                     {label}
                     {conf != null && <span style={{ fontSize: 10, color: C.dim, fontFamily: 'monospace' }}>{(conf * 100).toFixed(0)}%</span>}
                   </div>
@@ -477,7 +486,7 @@ function LiveTab({ info, step, objects, safety, log }) {
             </div>
           ) : (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px 0' }}>
-              <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3, animation: 'float 4s ease-in-out infinite' }}>📷</div>
+              <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.4 }}>📷</div>
               <div style={{ fontSize: 13, fontWeight: 600, color: C.dim }}>No objects detected</div>
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Point camera at lab equipment</div>
             </div>
@@ -496,13 +505,13 @@ function LiveTab({ info, step, objects, safety, log }) {
             {log.map((e, i) => {
               const colors = { danger: C.danger, step: C.accent, success: C.success, info: C.dim };
               const icons = { danger: '🚨', step: '📍', success: '🎉', info: 'ℹ️' };
-              const rgb = { danger: C.dangerRgb, step: C.accentRgb, success: C.successRgb, info: '100,116,139' };
+              const bgs = { danger: '#FEF2F2', step: '#EFF6FF', success: '#F0FDF4', info: '#F8FAFC' };
+              const borders = { danger: C.danger, step: C.accent, success: C.success, info: '#CBD5E1' };
               const c = colors[e.type] || C.dim;
-              const r = rgb[e.type] || '100,116,139';
               return (
                 <div key={e.id} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', borderRadius: 10,
-                  background: `rgba(${r}, 0.05)`, borderLeft: `3px solid rgba(${r}, 0.6)`,
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', borderRadius: 8,
+                  background: bgs[e.type] || '#F8FAFC', borderLeft: `3px solid ${borders[e.type] || '#CBD5E1'}`,
                   animation: `slideIn 0.3s ease-out ${Math.min(i, 4) * 0.04}s both`,
                 }}>
                   <span style={{ fontSize: 12, flexShrink: 0 }}>{icons[e.type] || 'ℹ️'}</span>
@@ -514,7 +523,7 @@ function LiveTab({ info, step, objects, safety, log }) {
           </div>
         ) : (
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
-            <div style={{ fontSize: 28, marginBottom: 6, opacity: 0.3, animation: 'float 3.5s ease-in-out infinite' }}>📭</div>
+            <div style={{ fontSize: 28, marginBottom: 6, opacity: 0.4 }}>📭</div>
             <div style={{ fontSize: 13, fontWeight: 600, color: C.dim }}>No events yet</div>
             <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Events appear when the experiment starts</div>
           </div>
@@ -527,34 +536,98 @@ function LiveTab({ info, step, objects, safety, log }) {
 // ═════════════════════════════════════════════════════════════════════════════
 // STUDENTS TAB
 // ═════════════════════════════════════════════════════════════════════════════
-function StudentsTab() {
+function StudentsTab({ liveStudents = {} }) {
+  const live = Object.values(liveStudents);
+  // Derive status from live data
+  const students = live.length > 0 ? live.map(st => {
+    const ss = st.student_stats || {};
+    const si = st.step_info || {};
+    const cur = ss.current_step ?? si.current_step ?? 0;
+    const tot = ss.total_steps ?? si.total_steps ?? 4;
+    const complete = st.experiment_complete || ss.experiment_complete || false;
+    const alerts = ss.safety_alerts_count || 0;
+    const status = complete ? 'completed' : alerts > 0 ? 'safety_alert' : 'active';
+    return { id: st.id, status, step: cur, total: tot, alerts, complete,
+      frames: ss.frames_processed || 0, detections: ss.detections_count || 0,
+      steps_done: ss.steps_completed || 0,
+      time_on_step: ss.time_on_current_step || 0,
+      session: ss.session_duration || 0,
+      step_name: si.step_name || STEP_NAMES[cur] || `Step ${cur + 1}`,
+      last_seen: st.last_seen || Date.now(),
+    };
+  }) : MOCK_STUDENTS.map(st => ({
+    ...st, complete: st.status === 'completed', frames: 0, detections: 0,
+    steps_done: st.step, time_on_step: 0, session: 0, step_name: STEP_NAMES[st.step] || '',
+    last_seen: Date.now(),
+  }));
+
+  // ── Computed summary stats ──
+  const summary = useMemo(() => {
+    const total = students.length;
+    const totalAlerts = students.reduce((a, s) => a + (s.alerts || 0), 0);
+    const completed = students.filter(s => s.complete).length;
+    const avgPct = total > 0 ? Math.round(students.reduce((a, s) => {
+      const p = s.total > 0 ? ((s.step + (s.complete ? 1 : 0)) / s.total) * 100 : 0;
+      return a + Math.min(p, 100);
+    }, 0) / total) : 0;
+    return { total, totalAlerts, completed, avgPct };
+  }, [students]);
+
   const sc = {
-    active: { color: C.accent, label: 'Active', rgb: C.accentRgb },
-    idle: { color: C.dim, label: 'Idle', rgb: '100,116,139' },
-    completed: { color: C.success, label: 'Done', rgb: C.successRgb },
-    safety_alert: { color: C.danger, label: 'Alert', rgb: C.dangerRgb },
+    active: { color: C.accent, label: 'Active', bg: '#EFF6FF', borderColor: '#BFDBFE' },
+    idle: { color: C.dim, label: 'Idle', bg: '#F8FAFC', borderColor: '#E2E8F0' },
+    completed: { color: C.success, label: 'Done', bg: '#F0FDF4', borderColor: '#BBF7D0' },
+    safety_alert: { color: C.danger, label: 'Alert', bg: '#FEF2F2', borderColor: '#FECACA' },
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <div style={{ animation: 'fadeIn 0.4s ease-out both' }}>
-        <h1 style={{ fontSize: 26, fontWeight: 900, letterSpacing: '-0.03em' }}>
-          Class <span className="gradient-text">Overview</span>
+        <h1 className="font-pixel" style={{ fontSize: 16, color: C.text }}>
+          Class Overview
         </h1>
-        <p style={{ fontSize: 14, color: C.dim, marginTop: 6, fontWeight: 500 }}>Monitoring {MOCK_STUDENTS.length} students • 4 languages supported</p>
+        <p style={{ fontSize: 14, color: C.dim, marginTop: 6, fontWeight: 500 }}>
+          Monitoring {students.length} student{students.length !== 1 ? 's' : ''}{live.length > 0 ? ' (live)' : ' (demo)'} • 4 languages supported
+        </p>
+      </div>
+
+      {/* ── Class Summary Panel ──────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, animation: 'fadeIn 0.4s ease-out 0.05s both' }}>
+        {[
+          { icon: '👥', label: 'Students', value: summary.total, color: C.accent },
+          { icon: '📊', label: 'Avg Progress', value: `${summary.avgPct}%`, color: C.blue },
+          { icon: '✅', label: 'Completed', value: summary.completed, color: C.success },
+          { icon: '🛡', label: 'Safety Alerts', value: summary.totalAlerts, color: summary.totalAlerts > 0 ? C.danger : C.success },
+        ].map((s, i) => (
+          <div key={i} className="card-blue-top" style={{ padding: '14px 16px', animation: `fadeIn 0.4s ease-out ${0.08 + i * 0.04}s both` }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{
+                width: 38, height: 38, borderRadius: 8,
+                background: '#EFF6FF',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 16, flexShrink: 0,
+                border: '1px solid #DBEAFE',
+              }}>{s.icon}</div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="font-pixel" style={{ fontSize: 7, color: C.dim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>{s.label}</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: s.color }}>{s.value}</div>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* Filter pills */}
       <div style={{ display: 'flex', gap: 8, animation: 'fadeIn 0.4s ease-out 0.1s both' }}>
         {Object.entries(sc).map(([k, v]) => {
-          const n = MOCK_STUDENTS.filter(s => s.status === k).length;
+          const n = students.filter(s => s.status === k).length;
           return n > 0 ? (
             <div key={k} style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 99,
-              background: `rgba(${v.rgb}, 0.08)`, border: `1px solid rgba(${v.rgb}, 0.2)`,
+              display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 6,
+              background: v.bg, border: `1px solid ${v.borderColor}`,
               fontSize: 11, fontWeight: 700, color: v.color,
             }}>
-              <div style={{ width: 6, height: 6, borderRadius: '50%', background: v.color, animation: k === 'active' ? 'pulseDot 1.4s ease-in-out infinite' : 'none' }} />
+              <div style={{ width: 6, height: 6, borderRadius: '50%', background: v.color }} />
               {n} {v.label}
             </div>
           ) : null;
@@ -562,60 +635,84 @@ function StudentsTab() {
       </div>
 
       {/* Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14 }}>
-        {MOCK_STUDENTS.map((st, i) => {
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(370px, 1fr))', gap: 14 }}>
+        {students.map((st, i) => {
           const s = sc[st.status] || sc.idle;
-          const pct = Math.round((st.step / st.total) * 100);
+          const pct = st.total > 0 ? Math.round(((st.step + (st.complete ? 1 : 0)) / st.total) * 100) : 0;
           return (
-            <GlassCard key={st.id} delay={i * 0.06}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <GlassCard key={st.id} delay={i * 0.06} danger={st.status === 'safety_alert'}>
+              {/* Header: avatar + id + status badge */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
                   <div style={{
                     width: 40, height: 40, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 15, fontWeight: 700,
-                    background: `linear-gradient(135deg, rgba(${C.accentRgb}, 0.25), rgba(59,130,246,0.25))`,
-                    boxShadow: `0 0 16px rgba(${C.accentRgb}, 0.1)`, flexShrink: 0,
-                  }}>{st.name.charAt(0)}</div>
+                    fontSize: 15, fontWeight: 700, color: '#fff',
+                    background: st.complete ? C.success : C.accent,
+                    flexShrink: 0,
+                  }}>{st.name ? st.name.charAt(0) : st.id.slice(-1)}</div>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{st.name}</div>
-                    <div style={{ fontSize: 11, color: C.dim, fontFamily: 'monospace' }}>{st.id}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {st.name || st.id}
+                    </div>
+                    <div className="font-pixel" style={{ fontSize: 7, color: C.dim }}>{st.id}</div>
                   </div>
                 </div>
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderRadius: 99,
-                  background: `rgba(${s.rgb}, 0.08)`, border: `1px solid rgba(${s.rgb}, 0.2)`,
-                  fontSize: 11, fontWeight: 700, color: s.color, flexShrink: 0,
-                }}>
-                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: s.color, animation: st.status === 'active' ? 'pulseDot 1.4s ease-in-out infinite' : 'none' }} />
-                  {s.label}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {st.alerts > 0 && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 6,
+                      background: '#FEF2F2', color: C.danger,
+                      border: '1px solid #FECACA',
+                    }}>⚠ {st.alerts}</span>
+                  )}
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderRadius: 6,
+                    background: s.bg, border: `1px solid ${s.borderColor}`,
+                    fontSize: 11, fontWeight: 700, color: s.color, flexShrink: 0,
+                  }}>
+                    <div style={{ width: 5, height: 5, borderRadius: '50%', background: s.color }} />
+                    {s.label}
+                  </div>
                 </div>
               </div>
 
-              {/* Progress */}
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 6 }}>
-                  <span style={{ color: C.dim }}>Step {st.step}/{st.total}</span>
-                  <span style={{ fontWeight: 700, color: C.accent }}>{pct}%</span>
+              {/* Progress bar */}
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 5 }}>
+                  <span style={{ color: C.dim, fontWeight: 500 }}>
+                    {st.complete ? 'Completed' : st.step_name}
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: C.dim }}>Step {st.step + (st.complete ? 1 : 0)}/{st.total}</span>
+                    <span style={{ fontWeight: 700, color: st.complete ? C.success : C.accent }}>{Math.min(pct, 100)}%</span>
+                  </span>
                 </div>
-                <div style={{ height: 4, borderRadius: 99, background: 'rgba(255,255,255,0.05)' }}>
+                <div style={{ height: 4, borderRadius: 99, background: '#E2E8F0' }}>
                   <div style={{
-                    height: '100%', borderRadius: 99, width: `${pct}%`,
-                    background: `linear-gradient(90deg, ${C.accent}, ${C.blue})`,
-                    boxShadow: `0 0 8px rgba(${C.accentRgb}, 0.3)`,
-                    transition: 'width 0.6s',
+                    height: '100%', borderRadius: 99, width: `${Math.min(pct, 100)}%`,
+                    background: st.complete ? C.success : C.accent,
+                    transition: 'width 0.5s',
                   }} />
                 </div>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 11, color: C.dim }}>🌐 {st.lang}</span>
-                {st.alerts > 0 && (
-                  <span style={{
-                    fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 99,
-                    background: `rgba(${C.dangerRgb}, 0.1)`, color: C.danger,
-                    border: `1px solid rgba(${C.dangerRgb}, 0.15)`,
-                  }}>⚠ {st.alerts}</span>
-                )}
+              {/* Metrics row */}
+              <div style={{
+                display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6,
+                padding: '10px 0 0', borderTop: '1px solid #E2E8F0',
+              }}>
+                {[
+                  { icon: '🎞', label: 'Frames', value: st.frames },
+                  { icon: '🔍', label: 'Detections', value: st.detections },
+                  { icon: '⏱', label: 'On Step', value: fmtDur(st.time_on_step) },
+                  { icon: '🕐', label: 'Session', value: fmtDur(st.session) },
+                ].map((m, j) => (
+                  <div key={j} style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 11, marginBottom: 2 }}>{m.icon}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.text, transition: 'all 0.3s ease' }}>{m.value}</div>
+                    <div style={{ fontSize: 9, color: C.dim, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{m.label}</div>
+                  </div>
+                ))}
               </div>
             </GlassCard>
           );
@@ -630,17 +727,17 @@ function StudentsTab() {
 // ═════════════════════════════════════════════════════════════════════════════
 function LibraryTab() {
   const dc = {
-    Beginner: { color: C.success, rgb: C.successRgb },
-    Intermediate: { color: '#eab308', rgb: '234,179,8' },
-    Advanced: { color: C.danger, rgb: C.dangerRgb },
+    Beginner: { color: C.success, bg: '#F0FDF4', borderColor: '#BBF7D0' },
+    Intermediate: { color: '#D97706', bg: '#FFFBEB', borderColor: '#FDE68A' },
+    Advanced: { color: C.danger, bg: '#FEF2F2', borderColor: '#FECACA' },
   };
   const si = { Chemistry: '⚗️', Physics: '⚡', Biology: '🧬' };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <div style={{ animation: 'fadeIn 0.4s ease-out both' }}>
-        <h1 style={{ fontSize: 26, fontWeight: 900, letterSpacing: '-0.03em' }}>
-          Experiment <span className="gradient-text">Library</span>
+        <h1 className="font-pixel" style={{ fontSize: 16, color: C.text }}>
+          Experiment Library
         </h1>
         <p style={{ fontSize: 14, color: C.dim, marginTop: 6, fontWeight: 500 }}>
           {EXPERIMENTS.length} experiments • {EXPERIMENTS.filter(e => e.active).length} live now
@@ -657,21 +754,21 @@ function LibraryTab() {
                 <div style={{
                   position: 'absolute', top: 16, right: 16,
                   display: 'flex', alignItems: 'center', gap: 6,
-                  padding: '4px 12px', borderRadius: 99,
-                  background: `rgba(${C.accentRgb}, 0.1)`, border: `1px solid rgba(${C.accentRgb}, 0.25)`,
+                  padding: '4px 12px', borderRadius: 6,
+                  background: '#EFF6FF', border: '1px solid #BFDBFE',
                   fontSize: 10, fontWeight: 700, color: C.accent,
                 }}>
-                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: C.accent, animation: 'pulseDot 1.4s ease-in-out infinite', boxShadow: `0 0 6px rgba(${C.accentRgb}, 0.5)` }} />
+                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: C.accent }} />
                   LIVE
                 </div>
               )}
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
                 <div style={{
-                  width: 48, height: 48, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: 48, height: 48, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 22,
-                  background: 'linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01))',
-                  border: `1px solid ${C.border}`, flexShrink: 0,
+                  background: '#EFF6FF',
+                  border: '1px solid #DBEAFE', flexShrink: 0,
                 }}>{si[exp.subject] || '🔬'}</div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, color: C.dim, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{exp.subject}</div>
@@ -681,24 +778,23 @@ function LibraryTab() {
 
               <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
                 <span style={{
-                  fontSize: 10, fontWeight: 700, padding: '4px 12px', borderRadius: 99,
-                  background: `rgba(${d.rgb}, 0.1)`, color: d.color,
-                  border: `1px solid rgba(${d.rgb}, 0.25)`,
+                  fontSize: 10, fontWeight: 700, padding: '4px 12px', borderRadius: 6,
+                  background: d.bg, color: d.color,
+                  border: `1px solid ${d.borderColor}`,
                 }}>{exp.diff}</span>
                 <span style={{ fontSize: 11, color: C.dim, display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>📋 {exp.steps} steps</span>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 14, borderTop: '1px solid #E2E8F0' }}>
                 <span style={{ fontSize: 11, color: C.dim, fontWeight: 500 }}>
                   {exp.active ? `👥 ${exp.students} students` : 'No sessions'}
                 </span>
                 <button style={{
-                  padding: '8px 18px', borderRadius: 10, fontSize: 12, fontWeight: 700,
-                  background: exp.active ? `linear-gradient(135deg, ${C.accent}, ${C.blue})` : 'rgba(255,255,255,0.04)',
+                  padding: '8px 18px', borderRadius: 6, fontSize: 12, fontWeight: 700,
+                  background: exp.active ? C.accent : '#F8FAFC',
                   color: exp.active ? '#fff' : C.dim,
-                  border: exp.active ? 'none' : `1px solid ${C.border}`,
-                  cursor: 'pointer', transition: 'all 0.25s',
-                  boxShadow: exp.active ? `0 0 20px rgba(${C.accentRgb}, 0.25)` : 'none',
+                  border: exp.active ? 'none' : '1px solid #E2E8F0',
+                  cursor: 'pointer', transition: 'all 0.2s',
                 }}>
                   {exp.active ? 'View Live →' : 'Start'}
                 </button>

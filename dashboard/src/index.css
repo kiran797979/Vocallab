@@ -1,11 +1,17 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;500;600;700;800;900&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 @theme {
-  --color-accent: #00d4aa;
-  --color-bg: #060a13;
-  --color-surface: rgba(15, 23, 42, 0.6);
-  --color-border: rgba(255, 255, 255, 0.06);
+  --color-primary: #2563EB;
+  --color-secondary: #1E40AF;
+  --color-accent: #06B6D4;
+  --color-bg: #F8FAFC;
+  --color-card: #FFFFFF;
+  --color-danger: #DC2626;
+  --color-success: #16A34A;
+  --color-border: #E2E8F0;
 }
 
 /* ── Base ───────────────────────────────────────────────────────────── */
@@ -24,8 +30,8 @@ body,
   min-height: 100dvh;
   width: 100%;
   overflow-x: hidden;
-  background: #060a13;
-  color: #e2e8f0;
+  background: #F8FAFC;
+  color: #1E293B;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -34,6 +40,11 @@ body,
 #root {
   display: flex;
   flex-direction: column;
+}
+
+/* ── Pixel Font Utility ────────────────────────────────────────────── */
+.font-pixel {
+  font-family: 'Press Start 2P', monospace;
 }
 
 /* ── Grid safety ────────────────────────────────────────────────────── */
@@ -54,326 +65,81 @@ body,
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: #CBD5E1;
   border-radius: 99px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: #94A3B8;
 }
 
 /* ── Keyframes ──────────────────────────────────────────────────────── */
 @keyframes fadeIn {
   from {
     opacity: 0;
-    transform: translateY(16px) scale(0.98);
+    transform: translateY(12px);
   }
-
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
 @keyframes slideIn {
   from {
     opacity: 0;
-    transform: translateX(-12px);
+    transform: translateX(-8px);
   }
-
   to {
     opacity: 1;
     transform: translateX(0);
   }
 }
 
-@keyframes pulseGlow {
-
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(0, 212, 170, 0.4);
-  }
-
-  50% {
-    box-shadow: 0 0 0 8px rgba(0, 212, 170, 0);
-  }
-}
-
 @keyframes pulseDot {
-
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-
-  50% {
-    opacity: 0.4;
-    transform: scale(0.8);
-  }
-}
-
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-
-  100% {
-    background-position: 200% 0;
-  }
-}
-
-@keyframes float {
-
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-
-  50% {
-    transform: translateY(-6px);
-  }
-}
-
-@keyframes gradientShift {
-  0% {
-    background-position: 0% 50%;
-  }
-
-  50% {
-    background-position: 100% 50%;
-  }
-
-  100% {
-    background-position: 0% 50%;
-  }
-}
-
-@keyframes borderGlow {
-
-  0%,
-  100% {
-    border-color: rgba(0, 212, 170, 0.15);
-  }
-
-  50% {
-    border-color: rgba(0, 212, 170, 0.35);
-  }
-}
-
-@keyframes ripple {
-  0% {
-    transform: scale(1);
-    opacity: 0.4;
-  }
-
-  100% {
-    transform: scale(2.5);
-    opacity: 0;
-  }
-}
-
-@keyframes rotate {
-  from {
-    transform: rotate(0deg);
-  }
-
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes spinBorder {
-  from {
-    transform: rotate(0deg);
-  }
-
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes logoGlow {
-
-  0%,
-  100% {
-    box-shadow:
-      0 0 10px rgba(0, 212, 170, 0.35),
-      0 0 24px rgba(0, 212, 170, 0.15),
-      0 0 2px rgba(59, 130, 246, 0.4);
-  }
-
-  50% {
-    box-shadow:
-      0 0 20px rgba(0, 212, 170, 0.6),
-      0 0 45px rgba(0, 212, 170, 0.25),
-      0 0 6px rgba(168, 85, 247, 0.5);
-  }
-}
-
-@keyframes textShimmer {
-  0% {
-    background-position: -200% center;
-  }
-
-  100% {
-    background-position: 200% center;
-  }
-}
-
-@keyframes haloSpin {
-  from {
-    transform: rotate(0deg);
-    opacity: 0.6;
-  }
-
-  50% {
+  0%, 100% {
     opacity: 1;
   }
-
-  to {
-    transform: rotate(360deg);
-    opacity: 0.6;
+  50% {
+    opacity: 0.4;
   }
 }
 
-/* ── Logo Badge ─────────────────────────────────────────────────────── */
-.logo-badge {
-  position: relative;
-  animation: logoGlow 3s ease-in-out infinite;
+/* ── Card ──────────────────────────────────────────────────────────── */
+.card {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
-/* Spinning conic-gradient ring behind the badge */
-.logo-badge::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 15px;
-  background: conic-gradient(from 0deg,
-      #00d4aa,
-      #3b82f6,
-      #a855f7,
-      #00d4aa);
-  animation: spinBorder 3s linear infinite;
-  z-index: -1;
-  filter: blur(1px);
+.card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-color: #CBD5E1;
 }
 
-/* Inner mask to keep the badge shape */
-.logo-badge::after {
-  content: '';
-  position: absolute;
-  inset: 1px;
-  border-radius: 11px;
-  background: #060a13;
-  z-index: -1;
+.card-static {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
-/* ── Logo Text Shimmer ──────────────────────────────────────────────── */
-.logo-text {
-  background: linear-gradient(90deg,
-      #00d4aa 0%,
-      #7dd3fc 20%,
-      #ffffff 40%,
-      #a855f7 60%,
-      #3b82f6 80%,
-      #00d4aa 100%);
-  background-size: 300% auto;
-  animation: textShimmer 3.5s linear infinite;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  filter: drop-shadow(0 0 8px rgba(0, 212, 170, 0.5));
+/* ── Danger Card ───────────────────────────────────────────────────── */
+.card-danger {
+  background: #FFFFFF;
+  border: 1px solid #DC2626;
+  border-left: 4px solid #DC2626;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
-/* ── Animated Mesh Background ───────────────────────────────────────── */
-.mesh-bg {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.mesh-bg::before {
-  content: '';
-  position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
-  background:
-    radial-gradient(ellipse 600px 600px at 20% 20%, rgba(0, 212, 170, 0.06), transparent),
-    radial-gradient(ellipse 500px 500px at 80% 30%, rgba(59, 130, 246, 0.04), transparent),
-    radial-gradient(ellipse 400px 400px at 50% 80%, rgba(168, 85, 247, 0.03), transparent);
-  animation: gradientShift 20s ease-in-out infinite;
-  background-size: 200% 200%;
-}
-
-.mesh-bg::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-  background-size: 60px 60px;
-  mask-image: radial-gradient(ellipse 70% 70% at 50% 50%, black, transparent);
-}
-
-/* ── Glass Card ─────────────────────────────────────────────────────── */
-.glass {
-  background: rgba(15, 23, 42, 0.5);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.glass:hover {
-  border-color: rgba(0, 212, 170, 0.2);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 212, 170, 0.05);
-  transform: translateY(-1px);
-}
-
-.glass-static {
-  background: rgba(15, 23, 42, 0.5);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
-}
-
-/* ── Gradient Text ──────────────────────────────────────────────────── */
-.gradient-text {
-  background: linear-gradient(135deg, #00d4aa, #3b82f6, #a855f7);
-  background-size: 200% 200%;
-  animation: gradientShift 6s ease-in-out infinite;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-/* ── Neon Glow Button ───────────────────────────────────────────────── */
-.neon-btn {
-  position: relative;
-  overflow: hidden;
-}
-
-.neon-btn::before {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  background: linear-gradient(135deg, #00d4aa, #3b82f6, #a855f7, #00d4aa);
-  background-size: 300% 300%;
-  animation: gradientShift 4s ease-in-out infinite;
-  border-radius: inherit;
-  z-index: -1;
-  opacity: 0;
-  transition: opacity 0.3s;
-}
-
-.neon-btn:hover::before {
-  opacity: 1;
+/* ── Blue Top Border Card ──────────────────────────────────────────── */
+.card-blue-top {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-top: 3px solid #2563EB;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }

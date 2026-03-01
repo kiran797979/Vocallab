@@ -1,6 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   VocalLab — AI Chemistry Lab Instructor (Mobile App v3.3)
+   VocalLab — AI Chemistry Lab Instructor (Mobile App v3.4)
    Premium UI · Expo SDK 52 · RN-COMPATIBLE
+   Enhanced for Stability + Proxy Mode + Demo Mode
    ═══════════════════════════════════════════════════════════════════════ */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -16,8 +17,10 @@ import Constants from 'expo-constants';
 
 const { width: W, height: H } = Dimensions.get('window');
 const CAMERA_H = H * 0.62;
-const CONFIG_SVR = Constants.expoConfig?.extra?.backendUrl?.replace('http://', '') || '172.20.10.2:8000';
-const DEFAULT_SVR = CONFIG_SVR;
+
+// Read backend URL from expo config extra (if provided), otherwise a sensible default placeholder
+const CONFIG_SVR = Constants.expoConfig?.extra?.backendUrl?.replace('http://', '') || '192.168.0.105:8000';
+const DEFAULT_SVR = '192.168.0.105:8000';  // Force correct IP for testing
 
 // ── Palette ─────────────────────────────────────────────────────────
 const C = {
@@ -29,7 +32,7 @@ const C = {
   danger: '#ef4444',
   success: '#22c55e',
   warn: '#f59e0b',
-  gold: '#f59e0b',       // transition state colour
+  gold: '#f59e0b',
   text: '#e2e8f0',
   dim: '#64748b',
   muted: '#334155',
@@ -58,9 +61,10 @@ const BOX_COLORS = {
   analytical_balance: '#E056A0',
 };
 
-export default function App() {
+function App() {
   const [screen, setScreen] = useState('home');
   const [serverIP, setServerIP] = useState(DEFAULT_SVR);
+  const cleanIP = (ip = '') => ip.replace('http://', '').replace('https://', '').replace('ws://', '').replace('wss://', '').trim();
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [expName, setExpName] = useState('');
@@ -80,9 +84,11 @@ export default function App() {
   const isAudioPlaying = useRef(false);
   const safetyTimeout = useRef(null);
   const scanAnim = useRef(new Animated.Value(0)).current;
-  const transitionPulse = useRef(new Animated.Value(1)).current;  // added
+  const transitionPulse = useRef(new Animated.Value(1)).current;
   const serverIPRef = useRef(serverIP);
   const wsReconnectAborted = useRef(false);
+  const isProcessingFrameRef = useRef(false);
+  const studentIdRef = useRef(null);
 
   const [permission, requestPermission] = useCameraPermissions();
   const lang = LANGS[langIdx];
@@ -120,20 +126,26 @@ export default function App() {
     return () => anim.stop();
   }, [fsmState?.step_status]);
 
-  // ── Audio ────────────────────────────────────────────────────────
+  // ── Audio Engine ──────────────────────────────────────────────────
   const playAudio = useCallback(async (url, force = false) => {
     if (!url) return;
     if (isAudioPlaying.current && !force) return;
+
     try {
       if (audioRef.current) {
-        try { await audioRef.current.stopAsync(); await audioRef.current.unloadAsync(); } catch (err) { }
+        try {
+          await audioRef.current.stopAsync();
+          await audioRef.current.unloadAsync();
+        } catch (err) { /* ignore stop errors */ }
       }
+
       isAudioPlaying.current = true;
       const { sound } = await Audio.Sound.createAsync(
         { uri: url },
         { shouldPlay: true, volume: 1.0 }
       );
       audioRef.current = sound;
+
       sound.setOnPlaybackStatusUpdate((status) => {
         if (status.didJustFinish) {
           isAudioPlaying.current = false;
@@ -156,7 +168,7 @@ export default function App() {
   }, []);
 
   // ── Step Parsing ──────────────────────────────────────────────────
-  const formatStep = (info, fallback = {}) => ({
+  const formatStep = useCallback((info, fallback = {}) => ({
     current_step: info?.current_step ?? fallback.current_step ?? 0,
     total_steps: info?.total_steps ?? fallback.total_steps ?? 4,
     step_name: info?.step_name ?? fallback.step_name ?? 'Experiment Setup',
@@ -167,25 +179,41 @@ export default function App() {
     progress: info?.progress ?? 0,
     time_on_step: info?.time_on_step ?? 0,
     step_status: info?.step_status ?? 'active',
-  });
+  }), []);
 
-  // ── Keep serverIPRef in sync so callbacks always have fresh IP ──────
+  // Keep serverIPRef in sync so callbacks always have fresh IP
   useEffect(() => { serverIPRef.current = serverIP; }, [serverIP]);
 
   // ── Server Connection ──────────────────────────────────────────────
   const testConnection = useCallback(async () => {
+    const target = cleanIP(serverIPRef.current);
+    if (!target) { Alert.alert('Error', 'Please enter a valid server IP address.'); return; }
+
+    console.log('[Connection] Testing connection to:', target);
     setConnecting(true);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000); // 8s timeout
+
     try {
-      const resp = await fetch(`http://${serverIPRef.current}/health`, {
+      const resp = await fetch(`http://${target}/health`, {
         method: 'GET',
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
+        signal: controller.signal
       });
+      clearTimeout(timer);
+
+      if (!resp.ok) throw new Error('Non-OK response');
       const data = await resp.json();
+      console.log('[Connection] Backend health response:', data);
       setConnected(true);
-      setExpName(data.fsm_state?.experiment_name || 'Chemistry Experiment');
+      const exp = data.fsm_state?.experiment_name || data.experiment_name || 'Chemistry Experiment';
+      setExpName(exp);
+      setServerIP(target); // Save the cleaned IP
     } catch (e) {
       setConnected(false);
-      Alert.alert('Connection Error', `Unable to reach ${serverIPRef.current}. Ensure server is running and device is on the same network.`);
+      const msg = e.name === 'AbortError' ? 'Connection timed out.' : 'Unable to reach the server.';
+      console.error('[Connection] Failed:', e.message || e);
+      Alert.alert('Connection Error', `${msg} Ensure your phone and PC are on the same Wi-Fi network and the IP [${target}] is correct.`);
     } finally {
       setConnecting(false);
     }
@@ -195,15 +223,22 @@ export default function App() {
   const onWSMessage = useCallback((evt) => {
     if (!evt.data) return;
     let msg;
-    try { msg = JSON.parse(evt.data); } catch (e) { return; }
+    try { msg = JSON.parse(evt.data); } catch (e) {
+      console.warn('[WS] Failed to parse message:', e);
+      return;
+    }
+
+    console.log('[WS] Received:', msg.type, msg);
 
     switch (msg.type) {
       case 'welcome':
       case 'experiment_loaded': {
+        console.log('[WS] Setting initial FSM state from welcome:', msg.step_info);
         setFsmState(formatStep(msg.step_info, { current_step: msg.current_step, total_steps: msg.total_steps }));
         break;
       }
       case 'language_updated': {
+        console.log('[WS] Language updated:', msg);
         if (msg.step_info) {
           setFsmState(prev => prev ? { ...prev, hint: msg.step_info.hint || prev.hint } : prev);
         }
@@ -212,14 +247,17 @@ export default function App() {
       }
       case 'detection_result': {
         const detections = msg.detections || [];
+        console.log('[WS] Detection result:', detections.length, 'objects detected', detections);
         setBoxes(detections);
         setDetCount(detections.length);
         if (msg.frame_width) setFrameSize(s => ({ ...s, w: msg.frame_width }));
         if (msg.frame_height) setFrameSize(s => ({ ...s, h: msg.frame_height }));
-        if (msg.step_info) setFsmState(formatStep(msg.step_info));
+        if (msg.step_info) {
+          console.log('[WS] Updating FSM state from detection:', msg.step_info);
+          setFsmState(formatStep(msg.step_info));
+        }
         if (msg.safety_alert) showSafetyAlert(msg.safety_alert);
         if (msg.audio_url) {
-          // Force audio on: safety alerts, step advances, AND transition events
           const isTransition = msg.step_info?.step_status === 'transition';
           const force = !!msg.safety_alert || !!msg.step_advance || isTransition;
           playAudio(`http://${serverIPRef.current}${msg.audio_url}`, force);
@@ -228,9 +266,10 @@ export default function App() {
         break;
       }
       default:
+        console.log('[WS] Unhandled message type:', msg.type);
         break;
     }
-  }, [playAudio, showSafetyAlert]);
+  }, [formatStep, playAudio, showSafetyAlert]);
 
   // ── Navigation ─────────────────────────────────────────────────────
   const startExperiment = useCallback(async () => {
@@ -260,28 +299,51 @@ export default function App() {
   // ── Camera Loop & WS ──────────────────────────────────────────────
   useEffect(() => {
     if (screen !== 'experiment') return;
-    let wsInstance;
-    let isProcessingFrame = false;
+
+    let wsInstance = null;
     wsReconnectAborted.current = false;
 
     const initWS = () => {
-      if (wsReconnectAborted.current) return; // stop reconnect after exit
+      if (wsReconnectAborted.current) return;
+      const target = cleanIP(serverIPRef.current);
+      if (!target) return;
+
+      console.log('[WS] Attempting connection to:', `ws://${target}/ws/student`);
+
       try {
-        wsInstance = new WebSocket(`ws://${serverIPRef.current}/ws/student`);
+        wsInstance = new WebSocket(`ws://${target}/ws/student`);
         wsRef.current = wsInstance;
+
         wsInstance.onopen = () => {
+          console.log('[WS] Connected successfully to:', target);
+          setConnected(true);
+          // request language setup
           if (wsInstance.readyState === 1) {
+            console.log('[WS] Sending language change request:', lang.code);
             wsInstance.send(JSON.stringify({ type: 'language_change', language: lang.code }));
           }
         };
+
         wsInstance.onmessage = onWSMessage;
-        wsInstance.onclose = () => {
+
+        wsInstance.onclose = (ev) => {
+          console.log('[WS] Connection closed - Code:', ev?.code, 'Reason:', ev?.reason);
           wsRef.current = null;
-          if (!wsReconnectAborted.current) setTimeout(initWS, 3000);
+          setConnected(false);
+          // attempt reconnect unless we intentionally aborted
+          if (!wsReconnectAborted.current) {
+            console.log('[WS] Scheduling reconnect in 3s...');
+            setTimeout(initWS, 3000);
+          }
         };
-        wsInstance.onerror = (e) => console.warn('[WS Error]', e?.message);
+
+        wsInstance.onerror = (e) => {
+          console.warn('[WS] Connection error:', e?.message || e);
+          setConnected(false);
+        };
       } catch (err) {
-        console.error('[WS Init Fail]', err);
+        console.error('[WS] Failed to create connection:', err);
+        setConnected(false);
         if (!wsReconnectAborted.current) setTimeout(initWS, 3000);
       }
     };
@@ -290,23 +352,31 @@ export default function App() {
 
     const captureFrame = async () => {
       if (wsReconnectAborted.current) return;
-      if (camRef.current && wsRef.current?.readyState === 1 && !isProcessingFrame) {
-        isProcessingFrame = true;
+      const wsOpen = wsRef.current && wsRef.current.readyState === 1;
+      if (camRef.current && wsOpen && !isProcessingFrameRef.current) {
+        isProcessingFrameRef.current = true;
         try {
           const photo = await camRef.current.takePictureAsync({ base64: true, quality: 0.3, skipProcessing: true });
           if (photo?.base64 && wsRef.current?.readyState === 1) {
+            console.log('[Camera] Sending frame to server, size:', photo.base64.length, 'chars, connected:', connected);
             wsRef.current.send(JSON.stringify({
               type: 'frame',
               data: photo.base64,
               language: lang.code,
               timestamp: Date.now()
             }));
+          } else {
+            console.log('[Camera] Skipping frame - no photo data or connection lost');
           }
         } catch (e) {
-          console.warn('[Camera Capture Error]', e?.message);
+          console.warn('[Camera Capture Error]', e?.message || e);
         } finally {
-          isProcessingFrame = false;
+          isProcessingFrameRef.current = false;
         }
+      } else {
+        if (!camRef.current) console.log('[Camera] No camera ref');
+        if (!wsOpen) console.log('[Camera] WebSocket not connected, connected state:', connected);
+        if (isProcessingFrameRef.current) console.log('[Camera] Already processing frame');
       }
       if (!wsReconnectAborted.current) loopRef.current = setTimeout(captureFrame, 700);
     };
@@ -316,7 +386,7 @@ export default function App() {
     return () => {
       wsReconnectAborted.current = true;
       clearTimeout(loopRef.current);
-      if (wsInstance) { try { wsInstance.close(); } catch (e) { } }
+      try { if (wsInstance) wsInstance.close(); } catch (e) { /* swallow */ }
       wsRef.current = null;
       if (audioRef.current) { try { audioRef.current.stopAsync(); audioRef.current.unloadAsync(); } catch (e) { } }
       if (safetyTimeout.current) clearTimeout(safetyTimeout.current);
@@ -403,7 +473,7 @@ export default function App() {
             </View>
           )}
 
-          <Text style={styles.footer}>VocalLab Mobile v3.3 • Powered by Gemini & YOLO</Text>
+          <Text style={styles.footer}>VocalLab Mobile v3.4 • Enhanced Stability</Text>
         </ScrollView>
       </SafeAreaView>
     );
@@ -459,7 +529,7 @@ export default function App() {
               }]}
             >
               <View style={[styles.boxLabel, { backgroundColor: color }]}>
-                <Text style={styles.boxText}>{d.label} {Math.round(d.confidence * 100)}%</Text>
+                <Text style={styles.boxText}>{d.label} {Math.round((d.confidence ?? 0) * 100)}%</Text>
               </View>
             </View>
           );
@@ -512,7 +582,7 @@ export default function App() {
               </View>
               <Text style={styles.progressText}>{Math.round(progress)}% completion for this step</Text>
 
-              {/* Transition Banner — gold pulsing overlay */}
+              {/* Transition Banner */}
               {fsmState?.step_status === 'transition' && (
                 <Animated.View style={[styles.transitionBanner, { opacity: transitionPulse }]}>
                   <Text style={styles.transitionIcon}>⏳</Text>
@@ -523,7 +593,7 @@ export default function App() {
                 </Animated.View>
               )}
 
-              {/* Normal hint — only when active */}
+              {/* Hint */}
               {fsmState.hint && fsmState.step_status !== 'transition' && (
                 <View style={styles.hintBox}>
                   <Text style={styles.hintIcon}>💡</Text>
@@ -531,7 +601,7 @@ export default function App() {
                 </View>
               )}
 
-              {/* Missing pills — only when active */}
+              {/* Missing pills */}
               {fsmState?.step_status !== 'transition' && fsmState.missing_objects?.length > 0 && (
                 <View style={styles.missingBox}>
                   <Text style={styles.missingTitle}>Required Equipment missing:</Text>
@@ -648,3 +718,5 @@ const styles = StyleSheet.create({
   transitionTitle: { color: C.gold, fontWeight: '900', fontSize: 14, marginBottom: 4 },
   transitionMsg: { color: '#fcd34d', fontSize: 13, lineHeight: 19 },
 });
+
+export default App;

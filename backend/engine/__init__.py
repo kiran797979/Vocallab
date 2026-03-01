@@ -1,5 +1,5 @@
 # VocalLab engine: detector + FSM
 from .detector import ObjectDetector
-from .fsm import ExperimentFSM, Detection
+from .fsm import ExperimentFSM
 
-__all__ = ["ObjectDetector", "ExperimentFSM", "Detection"]
+__all__ = ["ObjectDetector", "ExperimentFSM"]
